@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <array>
 
 int main(int argc, char **argv)
 {
@@ -41,7 +42,11 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  int connection_backlog = 5;
+  constexpr int buffer_size = 1024;
+  constexpr const char *pong_response = "+PONG\r\n";
+  constexpr int connection_backlog = 5;
+  std::array<char, buffer_size> buffer;
+
   if (listen(server_fd, connection_backlog) != 0)
   {
     std::cerr << "listen failed\n";
@@ -49,7 +54,7 @@ int main(int argc, char **argv)
   }
 
   struct sockaddr_in client_addr;
-  int client_addr_len = sizeof(client_addr);
+  const int client_addr_len = sizeof(client_addr);
   std::cout << "Waiting for a client to connect...\n";
 
   // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -66,9 +71,15 @@ int main(int argc, char **argv)
   }
   std::cout << "Client connected\n";
 
-  // Send +PONG\r\n response
-  constexpr const char *pong_response = "+PONG\r\n";
-  send(client_fd, pong_response, strlen(pong_response), 0);
+  while (true)
+  {
+    ssize_t bytes_received = recv(client_fd, buffer.data(), buffer.size(), 0);
+    if (bytes_received <= 0)
+    {
+      break; // Client disconnected or error
+    }
+    send(client_fd, pong_response, strlen(pong_response), 0);
+  }
 
   close(client_fd);
   close(server_fd);
