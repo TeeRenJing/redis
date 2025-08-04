@@ -57,9 +57,20 @@ int main(int argc, char **argv)
 
   // Uncomment this block to pass the first stage
 
-  accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+  int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+  if (client_fd < 0)
+  {
+    std::cerr << "accept failed\n";
+    close(server_fd);
+    return 1;
+  }
   std::cout << "Client connected\n";
 
+  // Send +PONG\r\n response
+  constexpr const char *pong_response = "+PONG\r\n";
+  send(client_fd, pong_response, strlen(pong_response), 0);
+
+  close(client_fd);
   close(server_fd);
 
   return 0;
