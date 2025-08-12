@@ -8,10 +8,29 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <array>
+#include <thread>
+
+constexpr int buffer_size = 1024;
+constexpr const char *pong_response = "+PONG\r\n";
+
+void handle_client(int client_fd)
+{
+  std::array<char, buffer_size> buffer;
+  std::cout << "Client connected\n";
+  while (true)
+  {
+    ssize_t bytes_received = recv(client_fd, buffer.data(), buffer.size(), 0);
+    if (bytes_received <= 0)
+    {
+      break; // Client disconnected or error
+    }
+    send(client_fd, pong_response, strlen(pong_response), 0);
+  }
+  close(client_fd);
+}
 
 int main(int argc, char **argv)
 {
-  // Flush after every std::cout / std::cerr
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
 
@@ -22,8 +41,6 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  // Since the tester restarts your program quite often, setting SO_REUSEADDR
-  // ensures that we don't run into 'Address already in use' errors
   int reuse = 1;
   if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
   {
@@ -42,10 +59,7 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  constexpr int buffer_size = 1024;
-  constexpr const char *pong_response = "+PONG\r\n";
   constexpr int connection_backlog = 5;
-  std::array<char, buffer_size> buffer;
 
   if (listen(server_fd, connection_backlog) != 0)
   {
@@ -56,33 +70,19 @@ int main(int argc, char **argv)
   struct sockaddr_in client_addr;
   const int client_addr_len = sizeof(client_addr);
   std::cout << "Waiting for a client to connect...\n";
-
-  // You can use print statements as follows for debugging, they'll be visible when running tests.
   std::cout << "Logs from your program will appear here!\n";
-
-  // Uncomment this block to pass the first stage
-
-  int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
-  if (client_fd < 0)
-  {
-    std::cerr << "accept failed\n";
-    close(server_fd);
-    return 1;
-  }
-  std::cout << "Client connected\n";
 
   while (true)
   {
-    ssize_t bytes_received = recv(client_fd, buffer.data(), buffer.size(), 0);
-    if (bytes_received <= 0)
+    int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+    if (client_fd < 0)
     {
-      break; // Client disconnected or error
+      std::cerr << "accept failed\n";
+      continue;
     }
-    send(client_fd, pong_response, strlen(pong_response), 0);
+    std::thread(handle_client, client_fd).detach();
   }
 
-  close(client_fd);
   close(server_fd);
-
   return 0;
 }
