@@ -36,10 +36,12 @@ void handle_client(int client_fd)
     }
     request = request.substr(start, end - start + 1);
 
-    // Convert command to uppercase for case-insensitive comparison
-    std::string cmd = request.substr(0, request.find(' '));
+    size_t space_pos = request.find(' ');
+    std::string cmd = (space_pos == std::string::npos) ? request : request.substr(0, space_pos);
     for (auto &c : cmd)
       c = std::toupper(c);
+
+    std::cout << "Received command: " << cmd << std::endl;
 
     if (cmd == "PING")
     {
