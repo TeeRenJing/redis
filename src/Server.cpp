@@ -9,6 +9,7 @@
 #include <netdb.h>
 #include <array>
 #include <thread>
+#include <vector>
 
 constexpr int buffer_size = 1024;
 constexpr const char *pong_response = "+PONG\r\n";
@@ -25,35 +26,69 @@ void handle_client(int client_fd)
       break; // Client disconnected or error
     }
     std::string request(buffer.data(), bytes_received);
+    std::cout << "Received raw request: " << request << std::endl;
 
-    // Remove leading/trailing whitespace
-    size_t start = request.find_first_not_of(" \r\n");
-    size_t end = request.find_last_not_of(" \r\n");
-    if (start == std::string::npos || end == std::string::npos)
+    // Minimal RESP array parser
+    std::vector<std::string> parts;
+    size_t pos = 0;
+    if (request[pos] == '*')
     {
-      send(client_fd, pong_response, strlen(pong_response), 0);
-      continue;
+      // Array
+      pos = request.find("\r\n", pos);
+      if (pos == std::string::npos)
+        continue;
+      pos += 2;
+      while (pos < request.size() && request[pos] == '$')
+      {
+        size_t len_end = request.find("\r\n", pos);
+        if (len_end == std::string::npos)
+          break;
+        int len = std::stoi(request.substr(pos + 1, len_end - pos - 1));
+        pos = len_end + 2;
+        std::string part = request.substr(pos, len);
+        parts.push_back(part);
+        pos += len + 2; // Skip over string and \r\n
+      }
     }
-    request = request.substr(start, end - start + 1);
-
-    std::cout << "Received request: " << request << std::endl;
-
-    size_t space_pos = request.find(' ');
-    std::string cmd = (space_pos == std::string::npos) ? request : request.substr(0, space_pos);
-    for (auto &c : cmd)
-      c = std::toupper(c);
-
-    std::cout << "Received command: " << cmd << std::endl;
-
-    if (cmd == "PING")
+    else
     {
-      send(client_fd, pong_response, strlen(pong_response), 0);
+      // Fallback: treat as a single command line
+      size_t start = request.find_first_not_of(" \r\n");
+      size_t end = request.find_last_not_of(" \r\n");
+      if (start == std::string::npos || end == std::string::npos)
+      {
+        send(client_fd, pong_response, strlen(pong_response), 0);
+        continue;
+      }
+      request = request.substr(start, end - start + 1);
+      size_t space_pos = request.find(' ');
+      parts.push_back((space_pos == std::string::npos) ? request : request.substr(0, space_pos));
+      if (space_pos != std::string::npos)
+        parts.push_back(request.substr(space_pos + 1));
     }
-    else if (cmd == "ECHO")
+
+    // Command handling
+    if (!parts.empty())
     {
-      std::string echo_arg = request.substr(request.find(' ') + 1);
-      std::string response = "$" + std::to_string(echo_arg.size()) + "\r\n" + echo_arg + "\r\n";
-      send(client_fd, response.c_str(), response.size(), 0);
+      std::string cmd = parts[0];
+      for (auto &c : cmd)
+        c = std::toupper(c);
+      std::cout << "Received command: " << cmd << std::endl;
+
+      if (cmd == "PING")
+      {
+        send(client_fd, pong_response, strlen(pong_response), 0);
+      }
+      else if (cmd == "ECHO" && parts.size() > 1)
+      {
+        std::string echo_arg = parts[1];
+        std::string response = "$" + std::to_string(echo_arg.size()) + "\r\n" + echo_arg + "\r\n";
+        send(client_fd, response.c_str(), response.size(), 0);
+      }
+      else
+      {
+        send(client_fd, pong_response, strlen(pong_response), 0);
+      }
     }
     else
     {
