@@ -36,6 +36,8 @@ void handle_client(int client_fd)
     }
     request = request.substr(start, end - start + 1);
 
+    std::cout << "Received request: " << request << std::endl;
+
     size_t space_pos = request.find(' ');
     std::string cmd = (space_pos == std::string::npos) ? request : request.substr(0, space_pos);
     for (auto &c : cmd)
