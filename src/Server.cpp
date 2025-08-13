@@ -24,7 +24,37 @@ void handle_client(int client_fd)
     {
       break; // Client disconnected or error
     }
-    send(client_fd, pong_response, strlen(pong_response), 0);
+    std::string request(buffer.data(), bytes_received);
+
+    // Remove leading/trailing whitespace
+    size_t start = request.find_first_not_of(" \r\n");
+    size_t end = request.find_last_not_of(" \r\n");
+    if (start == std::string::npos || end == std::string::npos)
+    {
+      send(client_fd, pong_response, strlen(pong_response), 0);
+      continue;
+    }
+    request = request.substr(start, end - start + 1);
+
+    // Convert command to uppercase for case-insensitive comparison
+    std::string cmd = request.substr(0, request.find(' '));
+    for (auto &c : cmd)
+      c = std::toupper(c);
+
+    if (cmd == "PING")
+    {
+      send(client_fd, pong_response, strlen(pong_response), 0);
+    }
+    else if (cmd == "ECHO")
+    {
+      std::string echo_arg = request.substr(request.find(' ') + 1);
+      std::string response = "$" + std::to_string(echo_arg.size()) + "\r\n" + echo_arg + "\r\n";
+      send(client_fd, response.c_str(), response.size(), 0);
+    }
+    else
+    {
+      send(client_fd, pong_response, strlen(pong_response), 0);
+    }
   }
   close(client_fd);
 }
