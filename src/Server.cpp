@@ -22,18 +22,17 @@ void handle_client(int client_fd)
   {
     ssize_t bytes_received = recv(client_fd, buffer.data(), buffer.size(), 0);
     if (bytes_received <= 0)
-    {
       break; // Client disconnected or error
-    }
-    std::string request(buffer.data(), bytes_received);
+
+    std::string_view request(buffer.data(), bytes_received);
     std::cout << "Received raw request: " << request << std::endl;
 
-    // Minimal RESP array parser
-    std::vector<std::string> parts;
+    std::vector<std::string_view> parts;
     size_t pos = 0;
-    if (request[pos] == '*')
+
+    if (!request.empty() && request[pos] == '*')
     {
-      // Array
+      // RESP array parsing
       pos = request.find("\r\n", pos);
       if (pos == std::string::npos)
         continue;
@@ -43,10 +42,11 @@ void handle_client(int client_fd)
         size_t len_end = request.find("\r\n", pos);
         if (len_end == std::string::npos)
           break;
-        int len = std::stoi(request.substr(pos + 1, len_end - pos - 1));
+        int len = std::stoi(std::string(request.substr(pos + 1, len_end - pos - 1)));
         pos = len_end + 2;
-        std::string part = request.substr(pos, len);
-        parts.push_back(part);
+        if (pos + len > request.size())
+          break;
+        parts.emplace_back(request.substr(pos, len));
         pos += len + 2; // Skip over string and \r\n
       }
     }
@@ -62,15 +62,15 @@ void handle_client(int client_fd)
       }
       request = request.substr(start, end - start + 1);
       size_t space_pos = request.find(' ');
-      parts.push_back((space_pos == std::string::npos) ? request : request.substr(0, space_pos));
+      parts.emplace_back(request.substr(0, space_pos));
       if (space_pos != std::string::npos)
-        parts.push_back(request.substr(space_pos + 1));
+        parts.emplace_back(request.substr(space_pos + 1));
     }
 
     // Command handling
     if (!parts.empty())
     {
-      std::string cmd = parts[0];
+      std::string cmd(parts[0]);
       for (auto &c : cmd)
         c = std::toupper(c);
       std::cout << "Received command: " << cmd << std::endl;
@@ -81,8 +81,8 @@ void handle_client(int client_fd)
       }
       else if (cmd == "ECHO" && parts.size() > 1)
       {
-        std::string echo_arg = parts[1];
-        std::string response = "$" + std::to_string(echo_arg.size()) + "\r\n" + echo_arg + "\r\n";
+        const auto &echo_arg = parts[1];
+        std::string response = "$" + std::to_string(echo_arg.size()) + "\r\n" + std::string(echo_arg) + "\r\n";
         send(client_fd, response.c_str(), response.size(), 0);
       }
       else
