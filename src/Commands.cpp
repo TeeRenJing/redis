@@ -59,18 +59,23 @@ void handle_get(int client_fd, const std::vector<std::string_view> &parts, Store
     }
     std::string key = std::string(parts[1]);
     auto it = kv_store.find(key);
-    if (it == kv_store.end() ||
-        (it->second.expiry != std::chrono::steady_clock::time_point::max() &&
-         std::chrono::steady_clock::now() > it->second.expiry))
+    if (it == kv_store.end())
     {
-        if (it != kv_store.end())
-            kv_store.erase(it); // erase expired key
         send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        return;
     }
-    else
+
+    // Check expiry only if key exists
+    if (it->second.expiry != std::chrono::steady_clock::time_point::max() &&
+        std::chrono::steady_clock::now() > it->second.expiry)
     {
-        const std::string &val = it->second.value;
-        std::string response = "$" + std::to_string(val.size()) + "\r\n" + val + "\r\n";
-        send(client_fd, response.c_str(), response.size(), 0);
+        kv_store.erase(it); // erase expired key
+        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        return;
     }
+
+    // Key exists and is not expired
+    const std::string &val = it->second.value;
+    std::string response = "$" + std::to_string(val.size()) + "\r\n" + val + "\r\n";
+    send(client_fd, response.c_str(), response.size(), 0);
 }
