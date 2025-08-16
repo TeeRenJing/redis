@@ -1,0 +1,18 @@
+#pragma once
+#include "Store.hpp"
+#include <string_view>
+#include <vector>
+
+constexpr const char *RESP_OK = "+OK\r\n";
+constexpr const char *RESP_PONG = "+PONG\r\n";
+constexpr const char *RESP_NIL = "$-1\r\n";
+constexpr const char *PX_ARG = "PX";
+constexpr const char *CMD_PING = "PING";
+constexpr const char *CMD_ECHO = "ECHO";
+constexpr const char *CMD_SET = "SET";
+constexpr const char *CMD_GET = "GET";
+
+void handle_ping(int client_fd);
+void handle_echo(int client_fd, const std::vector<std::string_view> &parts);
+void handle_set(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
+void handle_get(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);

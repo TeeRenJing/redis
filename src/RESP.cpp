@@ -1,6 +1,7 @@
 #include "RESP.hpp"
+#include <string>
 
-std::vector<std::string_view> parse_resp(const std::string_view &request) {
+std::vector<std::string_view> parse_resp(std::string_view request) {
     std::vector<std::string_view> parts;
     size_t pos = 0;
     if (!request.empty() && request[pos] == '*') {
