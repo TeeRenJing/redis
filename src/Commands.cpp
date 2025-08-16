@@ -2,6 +2,7 @@
 #include <string>
 #include <sys/socket.h>
 #include <cstring>
+#include <iostream>
 
 void handle_ping(int client_fd)
 {
@@ -38,7 +39,9 @@ void handle_set(int client_fd, const std::vector<std::string_view> &parts, Store
         try
         {
             long long px = std::stoll(std::string(parts[4]));
+            std::cout << "PX value: " << px << std::endl;
             expiry = std::chrono::steady_clock::now() + std::chrono::milliseconds(px);
+            std::cout << "Expiry set for key '" << key << "' at " << expiry.time_since_epoch().count() << std::endl;
         }
         catch (...)
         {
