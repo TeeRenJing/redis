@@ -134,3 +134,11 @@ void start_server(int port)
   }
   close(server_fd);
 }
+
+int main(int argc, char **argv)
+{
+  std::cout << std::unitbuf;
+  std::cerr << std::unitbuf;
+  start_server(6379);
+  return 0;
+}
