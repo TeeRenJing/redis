@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <cstring>
 
 void handle_client(int client_fd)
 {
@@ -56,7 +57,7 @@ void handle_client(int client_fd)
       else if (cmd == CMD_GET)
         handle_get(client_fd, parts, kv_store);
       else
-        handle_ping(client_fd);
+        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0); // Return Nil for invalid command
     }
     else
     {
