@@ -100,24 +100,19 @@ void handle_client(int client_fd)
       {
         std::string key = std::string(parts[1]);
         auto it = kv_store.find(key);
-        if (it != kv_store.end())
+        if (it == kv_store.end() ||
+            (it->second.expiry != std::chrono::steady_clock::time_point::max() &&
+             std::chrono::steady_clock::now() > it->second.expiry))
         {
-          if (it->second.expiry != std::chrono::steady_clock::time_point::max() &&
-              std::chrono::steady_clock::now() > it->second.expiry)
-          {
-            kv_store.erase(it);
-            send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
-          }
-          else
-          {
-            const std::string &val = it->second.value;
-            std::string response = "$" + std::to_string(val.size()) + "\r\n" + val + "\r\n";
-            send(client_fd, response.c_str(), response.size(), 0);
-          }
+          if (it != kv_store.end())
+            kv_store.erase(it); // erase expired key
+          send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
         }
         else
         {
-          send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+          const std::string &val = it->second.value;
+          std::string response = "$" + std::to_string(val.size()) + "\r\n" + val + "\r\n";
+          send(client_fd, response.c_str(), response.size(), 0);
         }
       }
       else
