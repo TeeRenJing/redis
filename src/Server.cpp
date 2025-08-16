@@ -8,11 +8,28 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <chrono>
+#include <unordered_map>
+
+constexpr const char *RESP_OK = "+OK\r\n";
+constexpr const char *RESP_PONG = "+PONG\r\n";
+constexpr const char *RESP_NIL = "$-1\r\n";
+constexpr const char *PX_ARG = "PX";
+constexpr const char *CMD_PING = "PING";
+constexpr const char *CMD_ECHO = "ECHO";
+constexpr const char *CMD_SET = "SET";
+constexpr const char *CMD_GET = "GET";
+
+struct ValueWithExpiry
+{
+  std::string value;
+  std::chrono::steady_clock::time_point expiry;
+};
 
 void handle_client(int client_fd)
 {
-  static std::unordered_map<std::string, std::string> kv_store;
-  std::array<char, buffer_size> buffer;
+  static std::unordered_map<std::string, ValueWithExpiry> kv_store;
+  std::array<char, 1024> buffer;
   std::cout << "Client connected\n";
   while (true)
   {
@@ -26,12 +43,11 @@ void handle_client(int client_fd)
     auto parts = parse_resp(request);
     if (parts.empty())
     {
-      // Fallback: treat as a single command line
       size_t start = request.find_first_not_of(" \r\n");
       size_t end = request.find_last_not_of(" \r\n");
       if (start == std::string::npos || end == std::string::npos)
       {
-        send(client_fd, pong_response, strlen(pong_response), 0);
+        send(client_fd, RESP_PONG, strlen(RESP_PONG), 0);
         continue;
       }
       std::string_view trimmed = request.substr(start, end - start + 1);
@@ -48,45 +64,70 @@ void handle_client(int client_fd)
         c = std::toupper(c);
       std::cout << "Received command: " << cmd << std::endl;
 
-      if (cmd == "PING")
+      if (cmd == CMD_PING)
       {
-        send(client_fd, pong_response, strlen(pong_response), 0);
+        send(client_fd, RESP_PONG, strlen(RESP_PONG), 0);
       }
-      else if (cmd == "ECHO" && parts.size() > 1)
+      else if (cmd == CMD_ECHO && parts.size() > 1)
       {
         const auto &echo_arg = parts[1];
         std::string response = "$" + std::to_string(echo_arg.size()) + "\r\n" + std::string(echo_arg) + "\r\n";
         send(client_fd, response.c_str(), response.size(), 0);
       }
-      else if (cmd == "SET" && parts.size() > 2)
+      else if (cmd == CMD_SET && parts.size() >= 3)
       {
-        kv_store[std::string(parts[1])] = std::string(parts[2]);
-        constexpr const char *ok_response = "+OK\r\n";
-        send(client_fd, ok_response, strlen(ok_response), 0);
+        std::string key = std::string(parts[1]);
+        std::string value = std::string(parts[2]);
+        auto expiry = std::chrono::steady_clock::time_point::max();
+
+        if (parts.size() >= 5 && parts[3] == PX_ARG)
+        {
+          try
+          {
+            long long px = std::stoll(std::string(parts[4]));
+            expiry = std::chrono::steady_clock::now() + std::chrono::milliseconds(px);
+          }
+          catch (...)
+          {
+            // Ignore invalid PX value
+          }
+        }
+
+        kv_store[key] = {value, expiry};
+        send(client_fd, RESP_OK, strlen(RESP_OK), 0);
       }
-      else if (cmd == "GET" && parts.size() > 1)
+      else if (cmd == CMD_GET && parts.size() > 1)
       {
-        auto it = kv_store.find(std::string(parts[1]));
+        std::string key = std::string(parts[1]);
+        auto it = kv_store.find(key);
         if (it != kv_store.end())
         {
-          const std::string &val = it->second;
-          std::string response = "$" + std::to_string(val.size()) + "\r\n" + val + "\r\n";
-          send(client_fd, response.c_str(), response.size(), 0);
+          if (it->second.expiry != std::chrono::steady_clock::time_point::max() &&
+              std::chrono::steady_clock::now() > it->second.expiry)
+          {
+            kv_store.erase(it);
+            send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+          }
+          else
+          {
+            const std::string &val = it->second.value;
+            std::string response = "$" + std::to_string(val.size()) + "\r\n" + val + "\r\n";
+            send(client_fd, response.c_str(), response.size(), 0);
+          }
         }
         else
         {
-          constexpr const char *nil_response = "$-1\r\n";
-          send(client_fd, nil_response, strlen(nil_response), 0);
+          send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
         }
       }
       else
       {
-        send(client_fd, pong_response, strlen(pong_response), 0);
+        send(client_fd, RESP_PONG, strlen(RESP_PONG), 0);
       }
     }
     else
     {
-      send(client_fd, pong_response, strlen(pong_response), 0);
+      send(client_fd, RESP_PONG, strlen(RESP_PONG), 0);
     }
   }
   close(client_fd);
