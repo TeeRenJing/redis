@@ -9,7 +9,7 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <cstring>
-#include <unordered_map>
+#include <algorithm>
 
 void handle_client(int client_fd)
 {
@@ -26,6 +26,7 @@ void handle_client(int client_fd)
 
     // Log request as one-liner with escaped special chars
     std::string log_request;
+    log_request.reserve(request.size());
     for (char c : request)
     {
       if (c == '\r')
@@ -40,15 +41,15 @@ void handle_client(int client_fd)
     auto parts = parse_resp(request);
     if (parts.empty())
     {
-      size_t start = request.find_first_not_of(" \r\n");
-      size_t end = request.find_last_not_of(" \r\n");
-      if (start == std::string::npos || end == std::string::npos)
+      auto start = request.find_first_not_of(" \r\n");
+      auto end = request.find_last_not_of(" \r\n");
+      if (start == std::string_view::npos || end == std::string_view::npos)
       {
         handle_ping(client_fd);
         continue;
       }
       std::string_view trimmed = request.substr(start, end - start + 1);
-      size_t space_pos = trimmed.find(' ');
+      auto space_pos = trimmed.find(' ');
       parts.emplace_back(trimmed.substr(0, space_pos));
       if (space_pos != std::string_view::npos)
         parts.emplace_back(trimmed.substr(space_pos + 1));
@@ -57,8 +58,11 @@ void handle_client(int client_fd)
     if (!parts.empty())
     {
       std::string cmd(parts[0]);
-      for (auto &c : cmd)
-        c = std::toupper(c);
+      std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::toupper);
+      cmd.erase(std::remove_if(cmd.begin(), cmd.end(),
+                               [](char c)
+                               { return c == '\n' || c == '\r'; }),
+                cmd.end());
       std::cout << "Received command: " << cmd << std::endl;
 
       if (cmd == CMD_PING)
@@ -92,12 +96,12 @@ void start_server(int port)
   }
   int reuse = 1;
   setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-  struct sockaddr_in server_addr;
+  sockaddr_in server_addr{};
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = INADDR_ANY;
   server_addr.sin_port = htons(port);
 
-  if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) != 0)
+  if (bind(server_fd, reinterpret_cast<sockaddr *>(&server_addr), sizeof(server_addr)) != 0)
   {
     std::cerr << "Failed to bind to port " << port << "\n";
     return;
@@ -108,13 +112,13 @@ void start_server(int port)
     std::cerr << "listen failed\n";
     return;
   }
-  struct sockaddr_in client_addr;
+  sockaddr_in client_addr{};
   const int client_addr_len = sizeof(client_addr);
   std::cout << "Waiting for a client to connect...\n";
   std::cout << "Logs from your program will appear here!\n";
   while (true)
   {
-    int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+    int client_fd = accept(server_fd, reinterpret_cast<sockaddr *>(&client_addr), (socklen_t *)&client_addr_len);
     if (client_fd < 0)
     {
       std::cerr << "accept failed\n";
