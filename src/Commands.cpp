@@ -92,14 +92,19 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
         return;
     }
     const auto key = std::string(parts[1]);
-    const auto value = std::string(parts[2]);
+
+    // Collect all values to push
+    std::vector<std::string> values;
+    values.reserve(parts.size() - 2);
+    for (size_t i = 2; i < parts.size(); ++i)
+        values.emplace_back(parts[i]);
 
     if (auto it = kv_store.find(key); it != kv_store.end())
     {
         if (auto *lval = dynamic_cast<ListValue *>(it->second.get()))
         {
-            lval->values.emplace_back(value);
-            std::string response = ":" + std::to_string(lval->values.size()) + "\r\n";
+            lval->values.insert(lval->values.end(), std::make_move_iterator(values.begin()), std::make_move_iterator(values.end()));
+            const std::string response = ":" + std::to_string(lval->values.size()) + "\r\n";
             send(client_fd, response.c_str(), response.size(), 0);
         }
         else
@@ -110,8 +115,9 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
     else
     {
         auto list = std::make_unique<ListValue>();
-        list->values.emplace_back(value);
+        list->values = std::move(values);
         kv_store.emplace(key, std::move(list));
-        send(client_fd, ":1\r\n", 4, 0);
+        const std::string response = ":" + std::to_string(list->values.size()) + "\r\n";
+        send(client_fd, response.c_str(), response.size(), 0);
     }
 }
