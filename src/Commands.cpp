@@ -308,29 +308,118 @@ void handle_llen(int client_fd, const std::vector<std::string_view> &parts, Stor
 
 void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
 {
+    // LPOP key [count]
+    // Returns:
+    // - Single element if no count specified
+    // - Array of elements if count specified
+    // - NIL if list doesn't exist or is empty
+
     if (parts.size() < 2)
     {
         send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
         return;
     }
+
     const auto key = std::string(parts[1]);
+    int count = 1; // Default count is 1
+
+    // Parse optional count parameter
+    if (parts.size() > 2)
+    {
+        try
+        {
+            count = std::stoi(std::string(parts[2]));
+            if (count < 0)
+            {
+                // Redis treats negative count as error
+                send(client_fd, "-ERR value is not an integer or out of range\r\n", 52, 0);
+                return;
+            }
+        }
+        catch (const std::exception &)
+        {
+            send(client_fd, "-ERR value is not an integer or out of range\r\n", 52, 0);
+            return;
+        }
+    }
+
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
-        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        // Key doesn't exist
+        if (parts.size() > 2)
+        {
+            // Return empty array for LPOP key count
+            send(client_fd, RESP_EMPTY_ARRAY, strlen(RESP_EMPTY_ARRAY), 0);
+        }
+        else
+        {
+            // Return NIL for LPOP key
+            send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        }
         return;
     }
+
     auto *lval = dynamic_cast<ListValue *>(it->second.get());
-    if (!lval || lval->values.empty())
+    if (!lval)
     {
-        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        // Key exists but is not a list
+        send(client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", 69, 0);
         return;
     }
 
-    // Remove and return the first element
-    std::string value = lval->values.front();
-    lval->values.erase(lval->values.begin());
+    if (lval->values.empty())
+    {
+        // List is empty
+        if (parts.size() > 2)
+        {
+            // Return empty array for LPOP key count
+            send(client_fd, RESP_EMPTY_ARRAY, strlen(RESP_EMPTY_ARRAY), 0);
+        }
+        else
+        {
+            // Return NIL for LPOP key
+            send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        }
+        return;
+    }
 
-    std::string response = "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
+    const size_t list_size = lval->values.size();
+    const size_t elements_to_pop = std::min(static_cast<size_t>(count), list_size);
+
+    std::string response;
+
+    if (parts.size() <= 2)
+    {
+        // LPOP key - return single element as bulk string
+        const std::string &element = lval->values.front();
+        response = "$" + std::to_string(element.size()) + "\r\n" + element + "\r\n";
+
+        // Remove the element
+        lval->values.erase(lval->values.begin());
+    }
+    else
+    {
+        // LPOP key count - return array of elements
+        response = "*" + std::to_string(elements_to_pop) + "\r\n";
+
+        // Add each element to response
+        for (size_t i = 0; i < elements_to_pop; ++i)
+        {
+            const std::string &element = lval->values[i];
+            response += "$" + std::to_string(element.size()) + "\r\n" + element + "\r\n";
+        }
+
+        // Remove the elements (more efficient to erase range)
+        lval->values.erase(lval->values.begin(), lval->values.begin() + elements_to_pop);
+    }
+
+    // If list is now empty, remove it from the store
+    if (lval->values.empty())
+    {
+        kv_store.erase(it);
+    }
+
+    // Send response
     send(client_fd, response.c_str(), response.size(), 0);
 }
