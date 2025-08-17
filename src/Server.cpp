@@ -159,6 +159,8 @@ private:
           handle_set(client_fd, parts, kv_store_);
         else if (cmd == CMD_GET)
           handle_get(client_fd, parts, kv_store_);
+        else if (cmd == CMD_LPUSH)
+          handle_lpush(client_fd, parts, kv_store_);
         else if (cmd == CMD_RPUSH)
           handle_rpush(client_fd, parts, kv_store_);
         else if (cmd == CMD_LRANGE)

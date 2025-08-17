@@ -84,6 +84,65 @@ void handle_get(int client_fd, const std::vector<std::string_view> &parts, Store
     }
 }
 
+void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() < 3)
+    {
+        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        return;
+    }
+    const auto key = std::string(parts[1]);
+
+    // Collect all values to push
+    std::vector<std::string> values;
+    values.reserve(parts.size() - 2);
+    for (size_t i = 2; i < parts.size(); ++i)
+        values.emplace_back(parts[i]);
+
+    if (auto it = kv_store.find(key); it != kv_store.end())
+    {
+        if (auto *lval = dynamic_cast<ListValue *>(it->second.get()))
+        {
+            lval->values.insert(lval->values.begin(), std::make_move_iterator(values.begin()), std::make_move_iterator(values.end()));
+            const std::string response = ":" + std::to_string(lval->values.size()) + "\r\n";
+            std::cout << "LPUSH response: " << response << std::endl;
+            send(client_fd, response.c_str(), response.size(), 0);
+        }
+        else
+        {
+            send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        }
+    }
+    else
+    {
+        auto list = std::make_unique<ListValue>();
+        list->values = std::move(values);
+        const std::string response = ":" + std::to_string(list->values.size()) + "\r\n";
+        kv_store.emplace(key, std::move(list));
+        send(client_fd, response.c_str(), response.size(), 0);
+
+        // Log the response
+        std::cout << "LPUSH response: " << response << std::endl;
+
+        // Log the map contents
+        std::cout << "Current lists in kv_store:" << std::endl;
+        for (const auto &[k, v] : kv_store)
+        {
+            if (auto *lval = dynamic_cast<ListValue *>(v.get()))
+            {
+                std::cout << "  " << k << ": [";
+                for (size_t i = 0; i < lval->values.size(); ++i)
+                {
+                    std::cout << lval->values[i];
+                    if (i + 1 < lval->values.size())
+                        std::cout << ", ";
+                }
+                std::cout << "]" << std::endl;
+            }
+        }
+    }
+}
+
 void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
 {
     if (parts.size() < 3)

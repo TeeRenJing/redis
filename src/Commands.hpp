@@ -12,6 +12,7 @@ constexpr const char *CMD_PING = "PING";
 constexpr const char *CMD_ECHO = "ECHO";
 constexpr const char *CMD_SET = "SET";
 constexpr const char *CMD_GET = "GET";
+constexpr const char *CMD_LPUSH = "LPUSH";
 constexpr const char *CMD_RPUSH = "RPUSH";
 constexpr const char *CMD_LRANGE = "LRANGE";
 
@@ -19,5 +20,6 @@ void handle_ping(int client_fd);
 void handle_echo(int client_fd, const std::vector<std::string_view> &parts);
 void handle_set(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_get(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
+void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
