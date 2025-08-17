@@ -195,6 +195,12 @@ void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, St
         stop = len - 1;
 
     int count = stop - start + 1;
+    if (count <= 0)
+    {
+        send(client_fd, "*0\r\n", 5, 0);
+        return;
+    }
+
     std::string response = "*" + std::to_string(count) + "\r\n";
     for (int i = start; i <= stop; ++i)
     {
