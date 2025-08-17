@@ -6,6 +6,7 @@
 constexpr const char *RESP_OK = "+OK\r\n";
 constexpr const char *RESP_PONG = "+PONG\r\n";
 constexpr const char *RESP_NIL = "$-1\r\n";
+constexpr const char *RESP_EMPTY_ARRAY = "*0\r\n";
 constexpr const char *PX_ARG = "px";
 constexpr const char *CMD_PING = "PING";
 constexpr const char *CMD_ECHO = "ECHO";

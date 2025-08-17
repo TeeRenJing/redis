@@ -147,7 +147,7 @@ void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, St
 {
     if (parts.size() < 4)
     {
-        send(client_fd, "*0\r\n", 5, 0);
+        send(client_fd, RESP_EMPTY_ARRAY, strlen(RESP_EMPTY_ARRAY), 0);
         return;
     }
     const auto key = std::string(parts[1]);
@@ -159,20 +159,20 @@ void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, St
     }
     catch (...)
     {
-        send(client_fd, "*0\r\n", 5, 0);
+        send(client_fd, RESP_EMPTY_ARRAY, strlen(RESP_EMPTY_ARRAY), 0);
         return;
     }
 
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
-        send(client_fd, "*0\r\n", 5, 0);
+        send(client_fd, RESP_EMPTY_ARRAY, strlen(RESP_EMPTY_ARRAY), 0);
         return;
     }
     auto *lval = dynamic_cast<ListValue *>(it->second.get());
     if (!lval)
     {
-        send(client_fd, "*0\r\n", 5, 0);
+        send(client_fd, RESP_EMPTY_ARRAY, strlen(RESP_EMPTY_ARRAY), 0);
         return;
     }
 
@@ -188,7 +188,7 @@ void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, St
         stop = 0;
     if (start >= len || start > stop)
     {
-        send(client_fd, "*0\r\n", 5, 0);
+        send(client_fd, RESP_EMPTY_ARRAY, strlen(RESP_EMPTY_ARRAY), 0);
         return;
     }
     if (stop >= len)
@@ -197,7 +197,7 @@ void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, St
     int count = stop - start + 1;
     if (count <= 0)
     {
-        send(client_fd, "*0\r\n", 5, 0);
+        send(client_fd, RESP_EMPTY_ARRAY, strlen(RESP_EMPTY_ARRAY), 0);
         return;
     }
 
