@@ -93,17 +93,22 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Sto
     }
     const auto key = std::string(parts[1]);
 
-    // Collect all values to push
-    std::vector<std::string> values;
-    values.reserve(parts.size() - 2);
-    for (size_t i = 2; i < parts.size(); ++i)
-        values.emplace_back(parts[i]);
-
     if (auto it = kv_store.find(key); it != kv_store.end())
     {
         if (auto *lval = dynamic_cast<ListValue *>(it->second.get()))
         {
-            lval->values.insert(lval->values.begin(), std::make_move_iterator(values.begin()), std::make_move_iterator(values.end()));
+            // Process elements from LEFT TO RIGHT in the command
+            // Each element gets pushed to the LEFT (front) of the list
+            // This means: LPUSH mylist a b c
+            // Step 1: push 'a' → [a]
+            // Step 2: push 'b' → [b, a]
+            // Step 3: push 'c' → [c, b, a]
+
+            for (size_t i = 2; i < parts.size(); ++i)
+            {
+                lval->values.emplace(lval->values.begin(), parts[i]);
+            }
+
             const std::string response = ":" + std::to_string(lval->values.size()) + "\r\n";
             std::cout << "LPUSH response: " << response << std::endl;
             send(client_fd, response.c_str(), response.size(), 0);
@@ -115,8 +120,15 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Sto
     }
     else
     {
+        // For new lists, simulate the same process
         auto list = std::make_unique<ListValue>();
-        list->values = std::move(values);
+
+        // Process arguments left to right, each going to front of list
+        for (size_t i = 2; i < parts.size(); ++i)
+        {
+            list->values.emplace(list->values.begin(), parts[i]);
+        }
+
         const std::string response = ":" + std::to_string(list->values.size()) + "\r\n";
         kv_store.emplace(key, std::move(list));
         send(client_fd, response.c_str(), response.size(), 0);
