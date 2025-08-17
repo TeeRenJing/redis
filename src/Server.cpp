@@ -165,6 +165,12 @@ private:
           handle_rpush(client_fd, parts, kv_store_);
         else if (cmd == CMD_LRANGE)
           handle_lrange(client_fd, parts, kv_store_);
+        else if (cmd == CMD_LLEN)
+          handle_llen(client_fd, parts, kv_store_);
+        // Add more command handlers as needed
+        // For example, you might want to implement a command to delete keys, or to check if a key exists.
+        // This modular approach allows for easy expansion of the command set without modifying existing code.
+        // Each command handler can be implemented in a separate source file if desired, keeping the code organized and maintainable.
         else
           send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
       }

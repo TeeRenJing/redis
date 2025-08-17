@@ -279,3 +279,29 @@ void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, St
     }
     send(client_fd, response.c_str(), response.size(), 0);
 }
+
+void handle_llen(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() < 2)
+    {
+        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        return;
+    }
+    const auto key = std::string(parts[1]);
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
+    {
+        // the response of LLEN command for a non-existent list. is 0, which is RESP Encoded as :0\r\n
+        std::string response = ":0\r\n";
+        send(client_fd, response.c_str(), response.size(), 0);
+        return;
+    }
+    auto *lval = dynamic_cast<ListValue *>(it->second.get());
+    if (!lval)
+    {
+        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        return;
+    }
+    std::string response = ":" + std::to_string(lval->values.size()) + "\r\n";
+    send(client_fd, response.c_str(), response.size(), 0);
+}
