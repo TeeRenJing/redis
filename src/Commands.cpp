@@ -105,6 +105,7 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
         {
             lval->values.insert(lval->values.end(), std::make_move_iterator(values.begin()), std::make_move_iterator(values.end()));
             const std::string response = ":" + std::to_string(lval->values.size()) + "\r\n";
+            std::cout << "RPUSH response: " << response << std::endl;
             send(client_fd, response.c_str(), response.size(), 0);
         }
         else
@@ -116,8 +117,28 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
     {
         auto list = std::make_unique<ListValue>();
         list->values = std::move(values);
-        kv_store.emplace(key, std::move(list));
         const std::string response = ":" + std::to_string(list->values.size()) + "\r\n";
+        kv_store.emplace(key, std::move(list));
         send(client_fd, response.c_str(), response.size(), 0);
+
+        // Log the response
+        std::cout << "RPUSH response: " << response << std::endl;
+
+        // Log the map contents
+        std::cout << "Current lists in kv_store:" << std::endl;
+        for (const auto &[k, v] : kv_store)
+        {
+            if (auto *lval = dynamic_cast<ListValue *>(v.get()))
+            {
+                std::cout << "  " << k << ": [";
+                for (size_t i = 0; i < lval->values.size(); ++i)
+                {
+                    std::cout << lval->values[i];
+                    if (i + 1 < lval->values.size())
+                        std::cout << ", ";
+                }
+                std::cout << "]" << std::endl;
+            }
+        }
     }
 }
