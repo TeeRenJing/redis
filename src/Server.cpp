@@ -23,7 +23,19 @@ void handle_client(int client_fd)
       break;
 
     std::string_view request(buffer.data(), bytes_received);
-    std::cout << "Received raw request: " << request << std::endl;
+
+    // Log request as one-liner with escaped special chars
+    std::string log_request;
+    for (char c : request)
+    {
+      if (c == '\r')
+        log_request += "\\r";
+      else if (c == '\n')
+        log_request += "\\n";
+      else
+        log_request += c;
+    }
+    std::cout << "Received raw request: " << log_request << std::endl;
 
     auto parts = parse_resp(request);
     if (parts.empty())
@@ -49,22 +61,18 @@ void handle_client(int client_fd)
         c = std::toupper(c);
       std::cout << "Received command: " << cmd << std::endl;
 
-      static const std::unordered_map<std::string, std::function<void(int, const std::vector<std::string_view> &, Store &)>> handlers = {
-          {CMD_PING, handle_ping},
-          {CMD_ECHO, handle_echo},
-          {CMD_SET, handle_set},
-          {CMD_GET, handle_get},
-          {CMD_RPUSH, handle_rpush}};
-
-      auto it = handlers.find(cmd);
-      if (it != handlers.end())
-      {
-        it->second(client_fd, parts, kv_store);
-      }
+      if (cmd == CMD_PING)
+        handle_ping(client_fd);
+      else if (cmd == CMD_ECHO)
+        handle_echo(client_fd, parts);
+      else if (cmd == CMD_SET)
+        handle_set(client_fd, parts, kv_store);
+      else if (cmd == CMD_GET)
+        handle_get(client_fd, parts, kv_store);
+      else if (cmd == CMD_RPUSH)
+        handle_rpush(client_fd, parts, kv_store);
       else
-      {
         send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
-      }
     }
     else
     {
