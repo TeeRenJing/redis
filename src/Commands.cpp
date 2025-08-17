@@ -393,3 +393,6 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Stor
     {
         kv_store.erase(it);
     }
+    // Send the response
+    send(client_fd, response.c_str(), response.size(), 0);
+}

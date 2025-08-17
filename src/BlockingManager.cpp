@@ -4,7 +4,6 @@
 #include <cstring>
 #include <iostream>
 #include <algorithm>
-#include <format>
 
 // Global instance
 BlockingManager g_blocking_manager;
@@ -117,9 +116,8 @@ bool BlockingManager::try_unblock_clients_for_key(const std::string &key, Store 
     }
 
     // Send response: array with [key, element]
-    std::string response = std::format("*2\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
-                                       key.size(), key,
-                                       element.size(), element);
+    std::string response = "*2\r\n$" + std::to_string(key.size()) + "\r\n" + key + "\r\n" +
+                           "$" + std::to_string(element.size()) + "\r\n" + element + "\r\n";
 
     ssize_t sent = send(client_fd, response.c_str(), response.size(), 0);
     if (sent < 0)

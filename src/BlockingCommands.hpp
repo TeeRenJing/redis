@@ -3,8 +3,7 @@
 #include <vector>
 #include <string_view>
 
-// Forward declarations
-class Store;
+#include "Store.hpp"
 
 // BLPOP command implementation
 void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);

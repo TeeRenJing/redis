@@ -7,8 +7,7 @@
 #include <memory>
 #include <chrono>
 
-// Forward declaration - include your actual Store definition
-class Store;
+#include "Store.hpp"
 
 // Structure to represent a blocked client
 struct BlockedClient

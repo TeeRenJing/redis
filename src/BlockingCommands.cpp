@@ -5,7 +5,6 @@
 #include <cstring>
 #include <iostream>
 #include <string>
-#include <format>
 
 void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
 {
@@ -64,9 +63,8 @@ void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Sto
                 }
 
                 // Send response: array with [key, element]
-                std::string response = std::format("*2\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
-                                                   key.size(), key,
-                                                   element.size(), element);
+                std::string response = "*2\r\n$" + std::to_string(key.size()) + "\r\n" + key + "\r\n" +
+                                       "$" + std::to_string(element.size()) + "\r\n" + element + "\r\n";
 
                 send(client_fd, response.c_str(), response.size(), 0);
 
