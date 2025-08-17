@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <cstring>
 #include <iostream>
+#include <variant>
 
 void handle_ping(int client_fd)
 {
@@ -81,4 +82,34 @@ void handle_get(int client_fd, const std::vector<std::string_view> &parts, Store
     const std::string &val = it->second.value;
     std::string response = "$" + std::to_string(val.size()) + "\r\n" + val + "\r\n";
     send(client_fd, response.c_str(), response.size(), 0);
+}
+
+void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() < 3)
+    {
+        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        return;
+    }
+    std::string key = std::string(parts[1]);
+    std::string value = std::string(parts[2]);
+
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
+    {
+        // Create new list
+        kv_store[key] = ListType{value};
+        send(client_fd, ":1\r\n", 4, 0);
+    }
+    else if (auto *list = std::get_if<ListType>(&it->second))
+    {
+        list->push_back(value);
+        std::string response = ":" + std::to_string(list->size()) + "\r\n";
+        send(client_fd, response.c_str(), response.size(), 0);
+    }
+    else
+    {
+        // Key exists but is not a list
+        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+    }
 }

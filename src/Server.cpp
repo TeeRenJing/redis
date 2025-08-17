@@ -9,6 +9,7 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <cstring>
+#include <unordered_map>
 
 void handle_client(int client_fd)
 {
@@ -48,16 +49,22 @@ void handle_client(int client_fd)
         c = std::toupper(c);
       std::cout << "Received command: " << cmd << std::endl;
 
-      if (cmd == CMD_PING)
-        handle_ping(client_fd);
-      else if (cmd == CMD_ECHO)
-        handle_echo(client_fd, parts);
-      else if (cmd == CMD_SET)
-        handle_set(client_fd, parts, kv_store);
-      else if (cmd == CMD_GET)
-        handle_get(client_fd, parts, kv_store);
+      static const std::unordered_map<std::string, std::function<void(int, const std::vector<std::string_view> &, Store &)>> handlers = {
+          {CMD_PING, handle_ping},
+          {CMD_ECHO, handle_echo},
+          {CMD_SET, handle_set},
+          {CMD_GET, handle_get},
+          {CMD_RPUSH, handle_rpush}};
+
+      auto it = handlers.find(cmd);
+      if (it != handlers.end())
+      {
+        it->second(client_fd, parts, kv_store);
+      }
       else
-        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0); // Return Nil for invalid command
+      {
+        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+      }
     }
     else
     {
