@@ -305,3 +305,32 @@ void handle_llen(int client_fd, const std::vector<std::string_view> &parts, Stor
     std::string response = ":" + std::to_string(lval->values.size()) + "\r\n";
     send(client_fd, response.c_str(), response.size(), 0);
 }
+
+void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() < 2)
+    {
+        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        return;
+    }
+    const auto key = std::string(parts[1]);
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
+    {
+        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        return;
+    }
+    auto *lval = dynamic_cast<ListValue *>(it->second.get());
+    if (!lval || lval->values.empty())
+    {
+        send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        return;
+    }
+
+    // Remove and return the first element
+    std::string value = lval->values.front();
+    lval->values.erase(lval->values.begin());
+
+    std::string response = "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
+    send(client_fd, response.c_str(), response.size(), 0);
+}

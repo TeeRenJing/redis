@@ -17,6 +17,8 @@ constexpr const char *CMD_RPUSH = "RPUSH";
 constexpr const char *CMD_LRANGE = "LRANGE";
 // The LLEN command is used to query a list's length. It returns a RESP-encoded integer.
 constexpr const char *CMD_LLEN = "LLEN";
+// The LPOP command removes and returns the first element of the list. If the list is empty or doesn't exist, it returns a null bulk string ($-1\r\n).
+constexpr const char *CMD_LPOP = "LPOP";
 
 void handle_ping(int client_fd);
 void handle_echo(int client_fd, const std::vector<std::string_view> &parts);
@@ -26,6 +28,8 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Sto
 void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_llen(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
+// The LPOP command removes and returns the first element of the list. If the list is empty or doesn't exist, it returns a null bulk string ($-1\r\n).
+void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 // Additional command handlers can be added here as needed.
 // For example, you might want to implement a command to delete keys, or to check if a key exists.
 // This modular approach allows for easy expansion of the command set without modifying existing code.
