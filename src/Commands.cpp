@@ -1,4 +1,5 @@
 #include "Commands.hpp"
+#include "BlockingManager.hpp" // Include for blocking support
 #include <string>
 #include <sys/socket.h>
 #include <cstring>
@@ -92,6 +93,7 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Sto
         return;
     }
     const auto key = std::string(parts[1]);
+    bool operation_successful = false;
 
     if (auto it = kv_store.find(key); it != kv_store.end())
     {
@@ -99,19 +101,14 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Sto
         {
             // Process elements from LEFT TO RIGHT in the command
             // Each element gets pushed to the LEFT (front) of the list
-            // This means: LPUSH mylist a b c
-            // Step 1: push 'a' → [a]
-            // Step 2: push 'b' → [b, a]
-            // Step 3: push 'c' → [c, b, a]
-
             for (size_t i = 2; i < parts.size(); ++i)
             {
                 lval->values.emplace(lval->values.begin(), parts[i]);
             }
 
             const std::string response = ":" + std::to_string(lval->values.size()) + "\r\n";
-            std::cout << "LPUSH response: " << response << std::endl;
             send(client_fd, response.c_str(), response.size(), 0);
+            operation_successful = true;
         }
         else
         {
@@ -132,26 +129,13 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Sto
         const std::string response = ":" + std::to_string(list->values.size()) + "\r\n";
         kv_store.emplace(key, std::move(list));
         send(client_fd, response.c_str(), response.size(), 0);
+        operation_successful = true;
+    }
 
-        // Log the response
-        std::cout << "LPUSH response: " << response << std::endl;
-
-        // Log the map contents
-        std::cout << "Current lists in kv_store:" << std::endl;
-        for (const auto &[k, v] : kv_store)
-        {
-            if (auto *lval = dynamic_cast<ListValue *>(v.get()))
-            {
-                std::cout << "  " << k << ": [";
-                for (size_t i = 0; i < lval->values.size(); ++i)
-                {
-                    std::cout << lval->values[i];
-                    if (i + 1 < lval->values.size())
-                        std::cout << ", ";
-                }
-                std::cout << "]" << std::endl;
-            }
-        }
+    // Try to unblock waiting clients if operation was successful
+    if (operation_successful)
+    {
+        g_blocking_manager.try_unblock_clients_for_key(key, kv_store);
     }
 }
 
@@ -163,6 +147,7 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
         return;
     }
     const auto key = std::string(parts[1]);
+    bool operation_successful = false;
 
     // Collect all values to push
     std::vector<std::string> values;
@@ -174,10 +159,12 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
     {
         if (auto *lval = dynamic_cast<ListValue *>(it->second.get()))
         {
-            lval->values.insert(lval->values.end(), std::make_move_iterator(values.begin()), std::make_move_iterator(values.end()));
+            lval->values.insert(lval->values.end(),
+                                std::make_move_iterator(values.begin()),
+                                std::make_move_iterator(values.end()));
             const std::string response = ":" + std::to_string(lval->values.size()) + "\r\n";
-            std::cout << "RPUSH response: " << response << std::endl;
             send(client_fd, response.c_str(), response.size(), 0);
+            operation_successful = true;
         }
         else
         {
@@ -191,26 +178,13 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
         const std::string response = ":" + std::to_string(list->values.size()) + "\r\n";
         kv_store.emplace(key, std::move(list));
         send(client_fd, response.c_str(), response.size(), 0);
+        operation_successful = true;
+    }
 
-        // Log the response
-        std::cout << "RPUSH response: " << response << std::endl;
-
-        // Log the map contents
-        std::cout << "Current lists in kv_store:" << std::endl;
-        for (const auto &[k, v] : kv_store)
-        {
-            if (auto *lval = dynamic_cast<ListValue *>(v.get()))
-            {
-                std::cout << "  " << k << ": [";
-                for (size_t i = 0; i < lval->values.size(); ++i)
-                {
-                    std::cout << lval->values[i];
-                    if (i + 1 < lval->values.size())
-                        std::cout << ", ";
-                }
-                std::cout << "]" << std::endl;
-            }
-        }
+    // Try to unblock waiting clients if operation was successful
+    if (operation_successful)
+    {
+        g_blocking_manager.try_unblock_clients_for_key(key, kv_store);
     }
 }
 
@@ -419,7 +393,3 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Stor
     {
         kv_store.erase(it);
     }
-
-    // Send response
-    send(client_fd, response.c_str(), response.size(), 0);
-}
