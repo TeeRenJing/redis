@@ -142,3 +142,63 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
         }
     }
 }
+
+void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() < 4)
+    {
+        send(client_fd, "*0\r\n", 5, 0);
+        return;
+    }
+    const auto key = std::string(parts[1]);
+    int start = 0, stop = 0;
+    try
+    {
+        start = std::stoi(std::string(parts[2]));
+        stop = std::stoi(std::string(parts[3]));
+    }
+    catch (...)
+    {
+        send(client_fd, "*0\r\n", 5, 0);
+        return;
+    }
+
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
+    {
+        send(client_fd, "*0\r\n", 5, 0);
+        return;
+    }
+    auto *lval = dynamic_cast<ListValue *>(it->second.get());
+    if (!lval)
+    {
+        send(client_fd, "*0\r\n", 5, 0);
+        return;
+    }
+
+    const auto &values = lval->values;
+    int len = static_cast<int>(values.size());
+    if (start < 0)
+        start = len + start;
+    if (stop < 0)
+        stop = len + stop;
+    if (start < 0)
+        start = 0;
+    if (stop < 0)
+        stop = 0;
+    if (start >= len || start > stop)
+    {
+        send(client_fd, "*0\r\n", 5, 0);
+        return;
+    }
+    if (stop >= len)
+        stop = len - 1;
+
+    int count = stop - start + 1;
+    std::string response = "*" + std::to_string(count) + "\r\n";
+    for (int i = start; i <= stop; ++i)
+    {
+        response += "$" + std::to_string(values[i].size()) + "\r\n" + values[i] + "\r\n";
+    }
+    send(client_fd, response.c_str(), response.size(), 0);
+}
