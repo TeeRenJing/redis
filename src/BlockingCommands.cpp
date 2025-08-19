@@ -8,19 +8,21 @@
 
 void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
 {
-    // BLPOP key [key ...] timeout
-    if (parts.size() < 3)
+    // BLPOP key timeout
+    if (parts.size() != 3)
     {
         const char *error_msg = "-ERR wrong number of arguments for 'blpop' command\r\n";
         send(client_fd, error_msg, strlen(error_msg), 0);
         return;
     }
 
+    const std::string key(parts[1]);
+
     // Parse timeout (last argument)
     int timeout_seconds;
     try
     {
-        timeout_seconds = std::stoi(std::string(parts.back()));
+        timeout_seconds = std::stoi(std::string(parts[2]));
         if (timeout_seconds < 0)
         {
             const char *error_msg = "-ERR timeout is negative\r\n";
@@ -35,73 +37,49 @@ void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Sto
         return;
     }
 
-    // Extract keys (all arguments except command and timeout)
-    std::vector<std::string> keys;
-    keys.reserve(parts.size() - 2);
-    for (size_t i = 1; i < parts.size() - 1; ++i)
+    // Try to pop from the list immediately
+    auto it = kv_store.find(key);
+    if (it != kv_store.end())
     {
-        keys.emplace_back(parts[i]);
-    }
-
-    // Try to pop from any available list immediately (check in order)
-    for (const auto &key : keys)
-    {
-        auto it = kv_store.find(key);
-        if (it != kv_store.end())
+        auto *lval = dynamic_cast<ListValue *>(it->second.get());
+        if (lval && !lval->values.empty())
         {
-            auto *lval = dynamic_cast<ListValue *>(it->second.get());
-            if (lval && !lval->values.empty())
+            // Element available - pop and return immediately
+            std::string element = std::move(lval->values.front());
+            lval->values.erase(lval->values.begin());
+
+            // If list is empty, remove it from store
+            if (lval->values.empty())
             {
-                // Element available - pop and return immediately
-                std::string element = std::move(lval->values.front());
-                lval->values.erase(lval->values.begin());
-
-                // If list is empty, remove it from store
-                if (lval->values.empty())
-                {
-                    kv_store.erase(it);
-                }
-
-                // Send response: array with [key, element]
-                std::string response = "*2\r\n$" + std::to_string(key.size()) + "\r\n" + key + "\r\n" +
-                                       "$" + std::to_string(element.size()) + "\r\n" + element + "\r\n";
-
-                send(client_fd, response.c_str(), response.size(), 0);
-
-                std::cout << "BLPOP immediate return for client " << client_fd
-                          << " from key: " << key << std::endl;
-                return;
+                kv_store.erase(it);
             }
+
+            // Send response: array with [key, element]
+            std::string response = "*2\r\n$" + std::to_string(key.size()) + "\r\n" + key + "\r\n" +
+                                   "$" + std::to_string(element.size()) + "\r\n" + element + "\r\n";
+
+            send(client_fd, response.c_str(), response.size(), 0);
+
+            std::cout << "BLPOP immediate return for client " << client_fd
+                      << " from key: " << key << std::endl;
+            return;
         }
     }
 
     // No elements available - block the client
-    auto timeout = std::chrono::seconds(timeout_seconds);
-    g_blocking_manager.add_blocked_client(client_fd, keys, timeout);
+    std::vector<std::string> keys = {key};
 
-    // Note: Client will receive response when:
-    // 1. An element becomes available (handled in LPUSH/RPUSH via try_unblock_clients_for_key)
-    // 2. Timeout occurs (handled by check_timeouts)
-    // 3. Client disconnects (should be handled in cleanup_client_on_disconnect)
-}
-
-void check_blocked_client_timeouts()
-{
-    g_blocking_manager.check_timeouts();
-}
-
-void cleanup_client_on_disconnect(int client_fd)
-{
-    if (g_blocking_manager.is_client_blocked(client_fd))
+    if (timeout_seconds == 0)
     {
-        std::cout << "Cleaning up disconnected blocked client " << client_fd << std::endl;
-        g_blocking_manager.remove_blocked_client(client_fd);
+        // Block indefinitely - use a very large timeout (e.g., 10 years)
+        auto infinite_timeout = std::chrono::seconds(315360000); // ~10 years
+        g_blocking_manager.add_blocked_client(client_fd, keys, infinite_timeout);
+        std::cout << "BLPOP blocking client " << client_fd << " indefinitely on key: " << key << std::endl;
     }
-}
-
-void print_blocking_stats()
-{
-    std::cout << "Blocking Stats:" << std::endl;
-    std::cout << "  Blocked clients: " << g_blocking_manager.get_blocked_client_count() << std::endl;
-    std::cout << "  Blocked keys: " << g_blocking_manager.get_blocked_keys_count() << std::endl;
+    else
+    {
+        auto timeout = std::chrono::seconds(timeout_seconds);
+        g_blocking_manager.add_blocked_client(client_fd, keys, timeout);
+        std::cout << "BLPOP blocking client " << client_fd << " for " << timeout_seconds << " seconds on key: " << key << std::endl;
+    }
 }
