@@ -5,6 +5,8 @@
 
 #include "Store.hpp"
 
+// Command constants
+constexpr const char *CMD_BLPOP = "BLPOP";
 // BLPOP command implementation
 void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 
