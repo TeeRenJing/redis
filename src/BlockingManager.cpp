@@ -8,14 +8,7 @@
 // Global instance
 BlockingManager g_blocking_manager;
 
-BlockedClient::BlockedClient(int fd, std::vector<std::string> k, std::chrono::seconds t)
-    : client_fd(fd), keys(std::move(k)),
-      block_start(std::chrono::steady_clock::now()),
-      timeout(t), is_indefinite(t.count() == 0)
-{
-}
-
-void BlockingManager::add_blocked_client(int client_fd, const std::vector<std::string> &keys, std::chrono::seconds timeout)
+void BlockingManager::add_blocked_client(int client_fd, const std::vector<std::string> &keys, std::chrono::duration<double> timeout)
 {
     std::cout << "[ADD_BLOCKED LOG] Adding client " << client_fd << " with timeout " << timeout.count() << " seconds" << std::endl;
 
@@ -193,7 +186,7 @@ void BlockingManager::check_timeouts()
         }
         else
         {
-            auto remaining = std::chrono::duration_cast<std::chrono::seconds>(timeout_time - now);
+            auto remaining = timeout_time - now;
             std::cout << "[TIMEOUT LOG] Client " << client_fd << " has " << remaining.count() << " seconds remaining" << std::endl;
         }
     }

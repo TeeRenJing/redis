@@ -15,10 +15,13 @@ struct BlockedClient
     int client_fd;
     std::vector<std::string> keys;
     std::chrono::steady_clock::time_point block_start;
-    std::chrono::seconds timeout;
+    std::chrono::duration<double> timeout;
     bool is_indefinite;
 
-    BlockedClient(int fd, std::vector<std::string> k, std::chrono::seconds t);
+    BlockedClient(int fd, std::vector<std::string> k, std::chrono::duration<double> t)
+        : client_fd(fd), keys(std::move(k)),
+          block_start(std::chrono::steady_clock::now()),
+          timeout(t), is_indefinite(t.count() == 0.0) {}
 };
 
 // Manages blocking operations for BLPOP
@@ -32,7 +35,7 @@ private:
 
 public:
     // Add a client to the blocking queue for specified keys
-    void add_blocked_client(int client_fd, const std::vector<std::string> &keys, std::chrono::seconds timeout);
+    void add_blocked_client(int client_fd, const std::vector<std::string> &keys, std::chrono::duration<double> timeout);
 
     // Remove a client from all blocking queues (e.g., on disconnect)
     void remove_blocked_client(int client_fd);

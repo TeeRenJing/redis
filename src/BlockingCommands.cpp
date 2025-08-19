@@ -24,12 +24,13 @@ void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Sto
     std::cout << "[BLPOP LOG] Client " << client_fd << " - Key: " << key << std::endl;
 
     // Parse timeout (last argument)
-    int timeout_seconds;
+    double timeout_seconds;
     try
     {
-        timeout_seconds = std::stoi(std::string(parts[2]));
+        timeout_seconds = std::stod(std::string(parts[2]));
         std::cout << "[BLPOP LOG] Client " << client_fd << " - Timeout: " << timeout_seconds << std::endl;
-        if (timeout_seconds < 0)
+
+        if (timeout_seconds < 0.0)
         {
             std::cout << "[BLPOP LOG] Client " << client_fd << " - ERROR: timeout is negative" << std::endl;
             const char *error_msg = "-ERR timeout is negative\r\n";
@@ -40,8 +41,8 @@ void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Sto
     }
     catch (const std::exception &)
     {
-        std::cout << "[BLPOP LOG] Client " << client_fd << " - ERROR: timeout is not an integer" << std::endl;
-        const char *error_msg = "-ERR timeout is not an integer\r\n";
+        std::cout << "[BLPOP LOG] Client " << client_fd << " - ERROR: timeout is not a number" << std::endl;
+        const char *error_msg = "-ERR timeout is not a number\r\n";
         send(client_fd, error_msg, strlen(error_msg), 0);
         std::cout << "[BLPOP LOG] Client " << client_fd << " - SENT INVALID TIMEOUT ERROR" << std::endl;
         return;
@@ -107,20 +108,18 @@ void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Sto
     std::cout << "[BLPOP LOG] Client " << client_fd << " - No elements available, will block..." << std::endl;
     std::vector<std::string> keys = {key};
 
-    if (timeout_seconds == 0)
+    // Block client accordingly
+    if (timeout_seconds == 0.0)
     {
-        // Block indefinitely - use a very large timeout (e.g., 10 years)
         auto infinite_timeout = std::chrono::seconds(315360000); // ~10 years
         std::cout << "[BLPOP LOG] Client " << client_fd << " - BLOCKING INDEFINITELY" << std::endl;
         g_blocking_manager.add_blocked_client(client_fd, keys, infinite_timeout);
-        std::cout << "BLPOP blocking client " << client_fd << " indefinitely on key: " << key << std::endl;
     }
     else
     {
-        auto timeout = std::chrono::seconds(timeout_seconds);
+        auto timeout = std::chrono::duration<double>(timeout_seconds);
         std::cout << "[BLPOP LOG] Client " << client_fd << " - BLOCKING FOR " << timeout_seconds << " SECONDS" << std::endl;
         g_blocking_manager.add_blocked_client(client_fd, keys, timeout);
-        std::cout << "BLPOP blocking client " << client_fd << " for " << timeout_seconds << " seconds on key: " << key << std::endl;
     }
 
     std::cout << "[BLPOP LOG] Client " << client_fd << " - handle_blpop FINISHED (client is now blocked)" << std::endl;
