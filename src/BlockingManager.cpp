@@ -17,21 +17,28 @@ BlockedClient::BlockedClient(int fd, std::vector<std::string> k, std::chrono::se
 
 void BlockingManager::add_blocked_client(int client_fd, const std::vector<std::string> &keys, std::chrono::seconds timeout)
 {
-    // Create blocked client info
-    client_info_[client_fd] = std::make_unique<BlockedClient>(client_fd, keys, timeout);
+    std::cout << "[ADD_BLOCKED LOG] Adding client " << client_fd << " with timeout " << timeout.count() << " seconds" << std::endl;
 
-    // Add client to waiting queue for each key
+    // Determine if this is indefinite blocking
+    bool indefinite = (timeout.count() >= 315360000); // Our "infinite" timeout value
+
+    // Create BlockedClient info
+    auto blocked_client = std::make_unique<BlockedClient>(client_fd, keys, timeout);
+    blocked_client->is_indefinite = indefinite;
+
+    std::cout << "[ADD_BLOCKED LOG] Client " << client_fd << " indefinite: " << (indefinite ? "YES" : "NO") << std::endl;
+
+    // Store client info
+    client_info_[client_fd] = std::move(blocked_client);
+
+    // Add client to each key's waiting queue
     for (const auto &key : keys)
     {
         blocked_clients_[key].push(client_fd);
+        std::cout << "[ADD_BLOCKED LOG] Added client " << client_fd << " to queue for key: " << key << std::endl;
     }
 
-    std::cout << "Client " << client_fd << " blocked on keys: ";
-    for (const auto &key : keys)
-    {
-        std::cout << key << " ";
-    }
-    std::cout << "(timeout: " << timeout.count() << "s)" << std::endl;
+    std::cout << "[ADD_BLOCKED LOG] Client " << client_fd << " successfully added to blocking manager" << std::endl;
 }
 
 void BlockingManager::remove_blocked_client(int client_fd)
@@ -78,40 +85,61 @@ void BlockingManager::remove_blocked_client(int client_fd)
 
 bool BlockingManager::try_unblock_clients_for_key(const std::string &key, Store &kv_store)
 {
+    std::cout << "[UNBLOCK LOG] try_unblock_clients_for_key called for key: " << key << std::endl;
+
     auto queue_it = blocked_clients_.find(key);
     if (queue_it == blocked_clients_.end() || queue_it->second.empty())
     {
+        std::cout << "[UNBLOCK LOG] No blocked clients for key: " << key << std::endl;
         return false;
     }
+
+    std::cout << "[UNBLOCK LOG] Found " << queue_it->second.size() << " blocked clients for key: " << key << std::endl;
 
     // Find the list in the store
     auto store_it = kv_store.find(key);
     if (store_it == kv_store.end())
+    {
+        std::cout << "[UNBLOCK LOG] Key not found in store: " << key << std::endl;
         return false;
+    }
 
     auto *lval = dynamic_cast<ListValue *>(store_it->second.get());
     if (!lval || lval->values.empty())
+    {
+        std::cout << "[UNBLOCK LOG] Key exists but list is empty or not a list: " << key << std::endl;
         return false;
+    }
+
+    std::cout << "[UNBLOCK LOG] List has " << lval->values.size() << " elements" << std::endl;
 
     // Get the longest-waiting client (FIFO order)
     int client_fd = queue_it->second.front();
     queue_it->second.pop();
 
+    std::cout << "[UNBLOCK LOG] Attempting to unblock client: " << client_fd << std::endl;
+
     // Verify client is still in our records
     auto client_it = client_info_.find(client_fd);
     if (client_it == client_info_.end())
     {
+        std::cout << "[UNBLOCK LOG] Client " << client_fd << " not found in client_info_, trying next client" << std::endl;
         // Client was removed but queue wasn't cleaned up properly
         return try_unblock_clients_for_key(key, kv_store); // Try next client
     }
+
+    std::cout << "[UNBLOCK LOG] Client " << client_fd << " found in client_info_" << std::endl;
 
     // Pop element from list
     std::string element = std::move(lval->values.front());
     lval->values.erase(lval->values.begin());
 
+    std::cout << "[UNBLOCK LOG] Popped element: '" << element << "' for client " << client_fd << std::endl;
+
     // If list is empty, remove it from store
     if (lval->values.empty())
     {
+        std::cout << "[UNBLOCK LOG] List is now empty, removing from store" << std::endl;
         kv_store.erase(store_it);
     }
 
@@ -119,17 +147,22 @@ bool BlockingManager::try_unblock_clients_for_key(const std::string &key, Store 
     std::string response = "*2\r\n$" + std::to_string(key.size()) + "\r\n" + key + "\r\n" +
                            "$" + std::to_string(element.size()) + "\r\n" + element + "\r\n";
 
+    std::cout << "[UNBLOCK LOG] SENDING UNBLOCK RESPONSE to client " << client_fd << ":" << std::endl;
+    std::cout << "[UNBLOCK LOG] Response bytes: " << response << std::endl;
+
     ssize_t sent = send(client_fd, response.c_str(), response.size(), 0);
     if (sent < 0)
     {
-        std::cerr << "Failed to send response to unblocked client " << client_fd << std::endl;
+        std::cerr << "[UNBLOCK LOG] ERROR: Failed to send response to unblocked client " << client_fd << std::endl;
     }
     else
     {
+        std::cout << "[UNBLOCK LOG] SUCCESS: Sent " << sent << " bytes to client " << client_fd << " (expected " << response.size() << ")" << std::endl;
         std::cout << "Unblocked client " << client_fd << " with element from key: " << key << std::endl;
     }
 
     // Remove client from all queues (they're no longer blocked)
+    std::cout << "[UNBLOCK LOG] Removing client " << client_fd << " from all blocked queues" << std::endl;
     remove_blocked_client(client_fd);
 
     return true;
@@ -137,34 +170,49 @@ bool BlockingManager::try_unblock_clients_for_key(const std::string &key, Store 
 
 void BlockingManager::check_timeouts()
 {
+    std::cout << "[TIMEOUT LOG] check_timeouts() called" << std::endl;
     auto now = std::chrono::steady_clock::now();
-
     std::vector<int> timed_out_clients;
 
-    // Find all timed out clients
-    for (const auto &[client_fd, client_info] : client_info_)
+    for (const auto &[client_fd, blocked_client_ptr] : client_info_)
     {
-        if (!client_info->is_indefinite)
+        // Skip indefinite blocking clients
+        if (blocked_client_ptr->is_indefinite)
         {
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - client_info->block_start);
-            if (elapsed >= client_info->timeout)
-            {
-                timed_out_clients.push_back(client_fd);
-            }
+            std::cout << "[TIMEOUT LOG] Client " << client_fd << " has indefinite blocking, skipping" << std::endl;
+            continue;
+        }
+
+        // Calculate timeout time: block_start + timeout duration
+        auto timeout_time = blocked_client_ptr->block_start + blocked_client_ptr->timeout;
+
+        if (now >= timeout_time)
+        {
+            std::cout << "[TIMEOUT LOG] Client " << client_fd << " has timed out" << std::endl;
+            timed_out_clients.push_back(client_fd);
+        }
+        else
+        {
+            auto remaining = std::chrono::duration_cast<std::chrono::seconds>(timeout_time - now);
+            std::cout << "[TIMEOUT LOG] Client " << client_fd << " has " << remaining.count() << " seconds remaining" << std::endl;
         }
     }
 
-    // Send timeout responses and remove clients
+    if (timed_out_clients.empty())
+    {
+        std::cout << "[TIMEOUT LOG] No clients have timed out" << std::endl;
+        return;
+    }
+
+    // Send NIL responses and remove timed-out clients
     for (int client_fd : timed_out_clients)
     {
+        std::cout << "[TIMEOUT LOG] SENDING NIL RESPONSE to timed-out client " << client_fd << std::endl;
+        const char *nil_response = "*-1\r\n"; // NIL array response
+        ssize_t sent = send(client_fd, nil_response, strlen(nil_response), 0);
+
+        std::cout << "[TIMEOUT LOG] Client " << client_fd << " sent NIL (" << sent << " bytes)" << std::endl;
         std::cout << "Client " << client_fd << " timed out on BLPOP" << std::endl;
-
-        ssize_t sent = send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
-        if (sent < 0)
-        {
-            std::cerr << "Failed to send timeout response to client " << client_fd << std::endl;
-        }
-
         remove_blocked_client(client_fd);
     }
 }
