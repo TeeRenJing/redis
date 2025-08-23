@@ -58,6 +58,30 @@ void BlockingManager::add_blocked_client(int client_fd, const std::vector<std::s
     std::cout << "[ADD_BLOCKED LOG] === EXITING add_blocked_client ===" << std::endl;
 }
 
+void BlockingManager::add_indefinitely_blocked_client(int client_fd, const std::vector<std::string> &keys)
+{
+    std::cout << "[ADD_INDEFINITE_BLOCKED LOG] === ENTERING add_indefinitely_blocked_client ===" << std::endl;
+    std::cout << "[ADD_INDEFINITE_BLOCKED LOG] client_fd: " << client_fd << std::endl;
+    std::cout << "[ADD_INDEFINITE_BLOCKED LOG] keys.size(): " << keys.size() << std::endl;
+
+    for (size_t i = 0; i < keys.size(); ++i)
+    {
+        std::cout << "[ADD_INDEFINITE_BLOCKED LOG] keys[" << i << "]: " << keys[i] << std::endl;
+    }
+
+    // Use a timeout value >= 315360000 to indicate indefinite blocking
+    constexpr double INDEFINITE_TIMEOUT_SECONDS = 315360000.0; // 10 years
+    std::chrono::duration<double> indefinite_timeout(INDEFINITE_TIMEOUT_SECONDS);
+
+    std::cout << "[ADD_INDEFINITE_BLOCKED LOG] Calling add_blocked_client with indefinite timeout ("
+              << INDEFINITE_TIMEOUT_SECONDS << " seconds)" << std::endl;
+
+    // Delegate to the existing function
+    add_blocked_client(client_fd, keys, indefinite_timeout);
+
+    std::cout << "[ADD_INDEFINITE_BLOCKED LOG] === EXITING add_indefinitely_blocked_client ===" << std::endl;
+}
+
 void BlockingManager::remove_blocked_client(int client_fd)
 {
     auto it = client_info_.find(client_fd);

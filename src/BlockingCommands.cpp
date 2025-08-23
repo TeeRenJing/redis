@@ -114,12 +114,9 @@ void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Sto
 
     if (timeout_seconds == 0.0)
     {
-        // Use chrono::duration<double> directly for consistency
-        std::chrono::duration<double> infinite_timeout(315360000.0); // 10 years in seconds as double
-        std::cout << "[BLPOP LOG] Client " << client_fd << " - INFINITE TIMEOUT CREATED: " << infinite_timeout.count() << " seconds" << std::endl;
-        std::cout << "[BLPOP LOG] Client " << client_fd << " - CALLING add_blocked_client with infinite timeout..." << std::endl;
-        g_blocking_manager.add_blocked_client(client_fd, keys, infinite_timeout);
-        std::cout << "[BLPOP LOG] Client " << client_fd << " - RETURNED from add_blocked_client" << std::endl;
+        std::cout << "[BLPOP LOG] Client " << client_fd << " - INFINITE TIMEOUT, CALLING add_indefinitely_blocked_client..." << std::endl;
+        g_blocking_manager.add_indefinitely_blocked_client(client_fd, keys);
+        std::cout << "[BLPOP LOG] Client " << client_fd << " - RETURNED from add_indefinitely_blocked_client" << std::endl;
     }
     else
     {

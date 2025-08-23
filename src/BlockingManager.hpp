@@ -42,6 +42,8 @@ public:
     void add_blocked_client(int client_fd, const std::vector<std::string> &keys,
                             std::chrono::duration<double> timeout);
 
+    void add_indefinitely_blocked_client(int client_fd, const std::vector<std::string> &keys);
+
     /**
      * Remove a blocked client from all queues
      * @param client_fd The client file descriptor to remove
