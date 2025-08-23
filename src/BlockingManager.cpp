@@ -43,8 +43,7 @@ void BlockingManager::remove_blocked_client(int client_fd)
     std::cout << "Removing blocked client " << client_fd << std::endl;
 
     // Remove from all key queues
-    // Note: This is O(n*m) where n=keys, m=avg queue size
-    // For high-performance servers, consider using a more sophisticated data structure
+    // This is still O(n*m) but acceptable for single-threaded since no contention
     for (auto &[key, queue] : blocked_clients_)
     {
         std::queue<int> temp_queue;
@@ -76,7 +75,7 @@ void BlockingManager::remove_blocked_client(int client_fd)
     client_info_.erase(it);
 }
 
-bool BlockingManager::try_unblock_clients_for_key(const std::string &key, Store &kv_store)
+bool BlockingManager::try_unblock_clients_for_key(const std::string &key, Store &kv_store, std::function<void(int, const std::string &)> send_callback)
 {
     std::cout << "[UNBLOCK LOG] try_unblock_clients_for_key called for key: " << key << std::endl;
 
@@ -97,14 +96,14 @@ bool BlockingManager::try_unblock_clients_for_key(const std::string &key, Store 
         return false;
     }
 
-    auto *lval = dynamic_cast<ListValue *>(store_it->second.get());
-    if (!lval || lval->values.empty())
+    auto *list_value = dynamic_cast<ListValue *>(store_it->second.get());
+    if (!list_value || list_value->values.empty())
     {
         std::cout << "[UNBLOCK LOG] Key exists but list is empty or not a list: " << key << std::endl;
         return false;
     }
 
-    std::cout << "[UNBLOCK LOG] List has " << lval->values.size() << " elements" << std::endl;
+    std::cout << "[UNBLOCK LOG] List has " << list_value->values.size() << " elements" << std::endl;
 
     // Get the longest-waiting client (FIFO order)
     int client_fd = queue_it->second.front();
@@ -118,19 +117,19 @@ bool BlockingManager::try_unblock_clients_for_key(const std::string &key, Store 
     {
         std::cout << "[UNBLOCK LOG] Client " << client_fd << " not found in client_info_, trying next client" << std::endl;
         // Client was removed but queue wasn't cleaned up properly
-        return try_unblock_clients_for_key(key, kv_store); // Try next client
+        return try_unblock_clients_for_key(key, kv_store, send_callback); // Try next client
     }
 
     std::cout << "[UNBLOCK LOG] Client " << client_fd << " found in client_info_" << std::endl;
 
     // Pop element from list
-    std::string element = std::move(lval->values.front());
-    lval->values.erase(lval->values.begin());
+    std::string element = std::move(list_value->values.front());
+    list_value->values.erase(list_value->values.begin());
 
     std::cout << "[UNBLOCK LOG] Popped element: '" << element << "' for client " << client_fd << std::endl;
 
     // If list is empty, remove it from store
-    if (lval->values.empty())
+    if (list_value->values.empty())
     {
         std::cout << "[UNBLOCK LOG] List is now empty, removing from store" << std::endl;
         kv_store.erase(store_it);
@@ -143,16 +142,11 @@ bool BlockingManager::try_unblock_clients_for_key(const std::string &key, Store 
     std::cout << "[UNBLOCK LOG] SENDING UNBLOCK RESPONSE to client " << client_fd << ":" << std::endl;
     std::cout << "[UNBLOCK LOG] Response bytes: " << response << std::endl;
 
-    ssize_t sent = send(client_fd, response.c_str(), response.size(), 0);
-    if (sent < 0)
-    {
-        std::cerr << "[UNBLOCK LOG] ERROR: Failed to send response to unblocked client " << client_fd << std::endl;
-    }
-    else
-    {
-        std::cout << "[UNBLOCK LOG] SUCCESS: Sent " << sent << " bytes to client " << client_fd << " (expected " << response.size() << ")" << std::endl;
-        std::cout << "Unblocked client " << client_fd << " with element from key: " << key << std::endl;
-    }
+    // Use callback instead of direct send() to handle non-blocking sockets
+    send_callback(client_fd, response);
+
+    std::cout << "[UNBLOCK LOG] Response queued for client " << client_fd << std::endl;
+    std::cout << "Unblocked client " << client_fd << " with element from key: " << key << std::endl;
 
     // Remove client from all queues (they're no longer blocked)
     std::cout << "[UNBLOCK LOG] Removing client " << client_fd << " from all blocked queues" << std::endl;
@@ -161,7 +155,7 @@ bool BlockingManager::try_unblock_clients_for_key(const std::string &key, Store 
     return true;
 }
 
-void BlockingManager::check_timeouts()
+void BlockingManager::check_timeouts(std::function<void(int, const std::string &)> send_callback)
 {
     std::cout << "[TIMEOUT LOG] check_timeouts() called" << std::endl;
     auto now = std::chrono::steady_clock::now();
@@ -201,13 +195,37 @@ void BlockingManager::check_timeouts()
     for (int client_fd : timed_out_clients)
     {
         std::cout << "[TIMEOUT LOG] SENDING NIL RESPONSE to timed-out client " << client_fd << std::endl;
-        const char *nil_response = "*-1\r\n"; // NIL array response
-        ssize_t sent = send(client_fd, nil_response, strlen(nil_response), 0);
+        const std::string nil_response = "*-1\r\n"; // NIL array response
 
-        std::cout << "[TIMEOUT LOG] Client " << client_fd << " sent NIL (" << sent << " bytes)" << std::endl;
+        // Use callback instead of direct send()
+        send_callback(client_fd, nil_response);
+
+        std::cout << "[TIMEOUT LOG] Client " << client_fd << " queued NIL response" << std::endl;
         std::cout << "Client " << client_fd << " timed out on BLPOP" << std::endl;
         remove_blocked_client(client_fd);
     }
+}
+
+// New method to check if a key can immediately satisfy a blocking operation
+bool BlockingManager::can_immediate_pop(const std::string &key, Store &kv_store) const
+{
+    auto store_iter = kv_store.find(key);
+    if (store_iter == kv_store.end())
+        return false;
+
+    auto *list_value = dynamic_cast<ListValue *>(store_iter->second.get());
+    return list_value && !list_value->values.empty();
+}
+
+// New method to get all keys that a client is waiting for
+std::vector<std::string> BlockingManager::get_client_keys(int client_fd) const
+{
+    auto it = client_info_.find(client_fd);
+    if (it != client_info_.end())
+    {
+        return it->second->keys;
+    }
+    return {};
 }
 
 bool BlockingManager::is_client_blocked(int client_fd) const

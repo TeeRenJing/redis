@@ -125,10 +125,10 @@ void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Sto
     std::cout << "[BLPOP LOG] Client " << client_fd << " - handle_blpop FINISHED (client is now blocked)" << std::endl;
 }
 
-void check_blocked_client_timeouts()
+// In BlockingCommands.cpp
+void check_blocked_client_timeouts(std::function<void(int, const std::string &)> send_callback)
 {
-    std::cout << "[TIMEOUT LOG] Checking blocked client timeouts..." << std::endl;
-    g_blocking_manager.check_timeouts();
+    g_blocking_manager.check_timeouts(send_callback);
 }
 
 void cleanup_client_on_disconnect(int client_fd)

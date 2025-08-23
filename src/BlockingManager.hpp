@@ -1,59 +1,110 @@
 #pragma once
 
-#include <string>
-#include <vector>
-#include <queue>
 #include <unordered_map>
+#include <queue>
+#include <vector>
+#include <string>
 #include <memory>
 #include <chrono>
-
+#include <functional>
 #include "Store.hpp"
 
-// Structure to represent a blocked client
 struct BlockedClient
 {
     int client_fd;
     std::vector<std::string> keys;
-    std::chrono::steady_clock::time_point block_start;
     std::chrono::duration<double> timeout;
+    std::chrono::steady_clock::time_point block_start;
     bool is_indefinite;
 
-    BlockedClient(int fd, std::vector<std::string> k, std::chrono::duration<double> t)
-        : client_fd(fd), keys(std::move(k)),
-          block_start(std::chrono::steady_clock::now()),
-          timeout(t), is_indefinite(t.count() == 0.0) {}
+    BlockedClient(int fd, const std::vector<std::string> &k, std::chrono::duration<double> t)
+        : client_fd(fd), keys(k), timeout(t), block_start(std::chrono::steady_clock::now()), is_indefinite(false) {}
 };
 
-// Manages blocking operations for BLPOP
 class BlockingManager
 {
-private:
-    // Map from key -> queue of blocked clients waiting for that key
-    std::unordered_map<std::string, std::queue<int>> blocked_clients_;
-    // Map from client_fd -> BlockedClient info
-    std::unordered_map<int, std::unique_ptr<BlockedClient>> client_info_;
-
 public:
-    // Add a client to the blocking queue for specified keys
-    void add_blocked_client(int client_fd, const std::vector<std::string> &keys, std::chrono::duration<double> timeout);
+    BlockingManager() = default;
+    ~BlockingManager() = default;
 
-    // Remove a client from all blocking queues (e.g., on disconnect)
+    // Non-copyable, non-movable (singleton-like usage)
+    BlockingManager(const BlockingManager &) = delete;
+    BlockingManager &operator=(const BlockingManager &) = delete;
+    BlockingManager(BlockingManager &&) = delete;
+    BlockingManager &operator=(BlockingManager &&) = delete;
+
+    /**
+     * Add a client to the blocking manager for the given keys
+     * @param client_fd The client file descriptor
+     * @param keys List of keys the client is waiting for
+     * @param timeout Timeout duration for the blocking operation
+     */
+    void add_blocked_client(int client_fd, const std::vector<std::string> &keys,
+                            std::chrono::duration<double> timeout);
+
+    /**
+     * Remove a blocked client from all queues
+     * @param client_fd The client file descriptor to remove
+     */
     void remove_blocked_client(int client_fd);
 
-    // Try to unblock clients waiting for a specific key
-    // Returns true if a client was unblocked
-    bool try_unblock_clients_for_key(const std::string &key, Store &kv_store);
+    /**
+     * Try to unblock clients waiting for a specific key
+     * @param key The key that now has available data
+     * @param kv_store Reference to the key-value store
+     * @param send_callback Callback function to send responses to clients
+     * @return true if a client was unblocked, false otherwise
+     */
+    bool try_unblock_clients_for_key(const std::string &key, Store &kv_store,
+                                     std::function<void(int, const std::string &)> send_callback);
 
-    // Check for timed out clients and send them timeout responses
-    void check_timeouts();
+    /**
+     * Check for timed-out clients and send them NIL responses
+     * @param send_callback Callback function to send responses to clients
+     */
+    void check_timeouts(std::function<void(int, const std::string &)> send_callback);
 
-    // Check if a client is currently blocked
+    /**
+     * Check if a key can immediately satisfy a blocking pop operation
+     * @param key The key to check
+     * @param kv_store Reference to the key-value store
+     * @return true if the key has available elements, false otherwise
+     */
+    bool can_immediate_pop(const std::string &key, Store &kv_store) const;
+
+    /**
+     * Get all keys that a specific client is waiting for
+     * @param client_fd The client file descriptor
+     * @return Vector of keys the client is waiting for (empty if client not blocked)
+     */
+    std::vector<std::string> get_client_keys(int client_fd) const;
+
+    /**
+     * Check if a client is currently blocked
+     * @param client_fd The client file descriptor to check
+     * @return true if client is blocked, false otherwise
+     */
     bool is_client_blocked(int client_fd) const;
 
-    // Get statistics (for debugging/monitoring)
+    /**
+     * Get the total number of blocked clients
+     * @return Number of currently blocked clients
+     */
     size_t get_blocked_client_count() const;
+
+    /**
+     * Get the number of keys that have blocked clients
+     * @return Number of keys with waiting clients
+     */
     size_t get_blocked_keys_count() const;
+
+private:
+    // Map from key name to queue of waiting client file descriptors
+    std::unordered_map<std::string, std::queue<int>> blocked_clients_;
+
+    // Map from client fd to their blocking information
+    std::unordered_map<int, std::unique_ptr<BlockedClient>> client_info_;
 };
 
-// Global instance - you might want to make this part of your server class instead
+// Global instance declaration
 extern BlockingManager g_blocking_manager;

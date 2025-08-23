@@ -133,9 +133,14 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Sto
     }
 
     // Try to unblock waiting clients if operation was successful
+    // In handle_lpush and handle_rpush
     if (operation_successful)
     {
-        g_blocking_manager.try_unblock_clients_for_key(key, kv_store);
+        auto send_callback = [](int client_fd, const std::string &response)
+        {
+            send(client_fd, response.c_str(), response.size(), 0);
+        };
+        g_blocking_manager.try_unblock_clients_for_key(key, kv_store, send_callback);
     }
 }
 
@@ -182,9 +187,14 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
     }
 
     // Try to unblock waiting clients if operation was successful
+    // In handle_lpush and handle_rpush
     if (operation_successful)
     {
-        g_blocking_manager.try_unblock_clients_for_key(key, kv_store);
+        auto send_callback = [](int client_fd, const std::string &response)
+        {
+            send(client_fd, response.c_str(), response.size(), 0);
+        };
+        g_blocking_manager.try_unblock_clients_for_key(key, kv_store, send_callback);
     }
 }
 

@@ -2,26 +2,33 @@
 #include "RESP.hpp"
 #include "Commands.hpp"
 #include "Store.hpp"
+#include "BlockingCommands.hpp"
+#include "BlockingManager.hpp"
 #include <iostream>
 #include <array>
-#include <thread>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <cstring>
 #include <algorithm>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
 #include <vector>
-#include <atomic>
-#include "BlockingCommands.hpp"
+#include <map>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/select.h>
+#include <queue>
+
+struct ClientState
+{
+  int fd;
+  std::string buffer;
+  std::queue<std::string> pending_responses;
+};
 
 class Server
 {
 public:
-  Server(int port, int pool_size = 4)
-      : port_(port), running_(true), pool_size_(pool_size) {}
+  Server(int port) : port_(port) {}
 
   void run()
   {
@@ -31,8 +38,14 @@ public:
       std::cerr << "Failed to create server socket\n";
       return;
     }
+
+    // Make server socket non-blocking
+    int flags = fcntl(server_fd, F_GETFL, 0);
+    fcntl(server_fd, F_SETFL, flags | O_NONBLOCK);
+
     int reuse = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
     sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
@@ -43,75 +56,211 @@ public:
       std::cerr << "Failed to bind to port " << port_ << "\n";
       return;
     }
+
     constexpr int connection_backlog = 5;
     if (listen(server_fd, connection_backlog) != 0)
     {
       std::cerr << "listen failed\n";
       return;
     }
-    sockaddr_in client_addr{};
-    const int client_addr_len = sizeof(client_addr);
-    std::cout << "Waiting for a client to connect...\n";
+
+    std::cout << "Waiting for clients to connect...\n";
     std::cout << "Logs from your program will appear here!\n";
 
-    // Start thread pool
-    for (int i = 0; i < pool_size_; ++i)
-      pool_.emplace_back(&Server::worker_thread, this);
-
+    // Main event loop
     while (true)
     {
-      int client_fd = accept(server_fd, reinterpret_cast<sockaddr *>(&client_addr), (socklen_t *)&client_addr_len);
-      if (client_fd < 0)
+      fd_set read_fds, write_fds;
+      FD_ZERO(&read_fds);
+      FD_ZERO(&write_fds);
+      FD_SET(server_fd, &read_fds);
+
+      int max_fd = server_fd;
+
+      // Add all client sockets to the read set
+      // Add clients with pending responses to write set
+      for (const auto &[fd, client] : clients_)
       {
-        std::cerr << "accept failed\n";
-        continue;
+        FD_SET(fd, &read_fds);
+        if (!client.pending_responses.empty())
+        {
+          FD_SET(fd, &write_fds);
+        }
+        max_fd = std::max(max_fd, fd);
       }
+
+      // Use select with timeout to periodically check blocking operations
+      struct timeval timeout;
+      timeout.tv_sec = 1; // 1 second timeout
+      timeout.tv_usec = 0;
+
+      int activity = select(max_fd + 1, &read_fds, &write_fds, nullptr, &timeout);
+
+      if (activity < 0)
       {
-        std::lock_guard lock(queue_mutex_);
-        client_queue_.push(client_fd);
+        std::cerr << "select error\n";
+        break;
       }
-      queue_cv_.notify_one();
+
+      // Check for new connections
+      if (FD_ISSET(server_fd, &read_fds))
+      {
+        accept_new_client(server_fd);
+      }
+
+      // Handle client I/O
+      auto it = clients_.begin();
+      while (it != clients_.end())
+      {
+        int client_fd = it->first;
+        ClientState &client = it->second;
+        bool should_remove = false;
+
+        // Handle reads
+        if (FD_ISSET(client_fd, &read_fds))
+        {
+          if (!handle_client_data(client))
+          {
+            should_remove = true;
+          }
+        }
+
+        // Handle writes (pending responses)
+        if (!should_remove && FD_ISSET(client_fd, &write_fds))
+        {
+          if (!send_pending_responses(client))
+          {
+            should_remove = true;
+          }
+        }
+
+        if (should_remove)
+        {
+          // Remove from blocking manager if client was blocked
+          g_blocking_manager.remove_blocked_client(client_fd);
+          close(client_fd);
+          it = clients_.erase(it);
+        }
+        else
+        {
+          ++it;
+        }
+      }
+
+      // Check blocking operations for completion (timeouts)
+      auto send_callback = [this](int client_fd, const std::string &response)
+      {
+        auto it = clients_.find(client_fd);
+        if (it != clients_.end())
+        {
+          it->second.pending_responses.push(response);
+        }
+      };
+      g_blocking_manager.check_timeouts(send_callback);
     }
 
-    running_ = false;
-    queue_cv_.notify_all();
-    for (auto &t : pool_)
-      t.join();
+    // Cleanup
+    for (const auto &[fd, client] : clients_)
+    {
+      close(fd);
+    }
     close(server_fd);
   }
 
 private:
-  void worker_thread()
+  void accept_new_client(int server_fd)
   {
-    while (running_)
+    sockaddr_in client_addr{};
+    socklen_t client_addr_len = sizeof(client_addr);
+
+    int client_fd = accept(server_fd, reinterpret_cast<sockaddr *>(&client_addr), &client_addr_len);
+    if (client_fd < 0)
     {
-      int client_fd;
+      if (errno != EWOULDBLOCK && errno != EAGAIN)
       {
-        std::unique_lock lock(queue_mutex_);
-        queue_cv_.wait(lock, [this]
-                       { return !client_queue_.empty() || !running_; });
-        if (!running_)
-          break;
-        client_fd = client_queue_.front();
-        client_queue_.pop();
+        std::cerr << "accept failed\n";
       }
-      handle_client(client_fd);
+      return;
     }
+
+    // Make client socket non-blocking
+    int flags = fcntl(client_fd, F_GETFL, 0);
+    fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+
+    clients_[client_fd] = ClientState{client_fd};
+    std::cout << "Client connected: " << client_fd << std::endl;
   }
 
-  void handle_client(int client_fd)
+  bool handle_client_data(ClientState &client)
   {
     std::array<char, 1024> buffer;
-    std::cout << "Client connected\n";
-    while (true)
+    ssize_t bytes_received = recv(client.fd, buffer.data(), buffer.size(), 0);
+
+    if (bytes_received <= 0)
     {
-      ssize_t bytes_received = recv(client_fd, buffer.data(), buffer.size(), 0);
-      if (bytes_received <= 0)
-        break;
+      if (bytes_received == 0 || (errno != EWOULDBLOCK && errno != EAGAIN))
+      {
+        std::cout << "Client disconnected: " << client.fd << std::endl;
+        return false;
+      }
+      return true; // No data available, but connection is still alive
+    }
 
-      std::string_view request(buffer.data(), bytes_received);
+    client.buffer.append(buffer.data(), bytes_received);
 
-      // Log request as one-liner with escaped special chars
+    // Process complete commands in buffer
+    return process_client_buffer(client);
+  }
+
+  bool send_pending_responses(ClientState &client)
+  {
+    while (!client.pending_responses.empty())
+    {
+      const std::string &response = client.pending_responses.front();
+      ssize_t sent = send(client.fd, response.c_str(), response.size(), 0);
+
+      if (sent < 0)
+      {
+        if (errno == EWOULDBLOCK || errno == EAGAIN)
+        {
+          // Can't send more right now, try later
+          return true;
+        }
+        else
+        {
+          // Real error
+          std::cerr << "Send error to client " << client.fd << std::endl;
+          return false;
+        }
+      }
+      else if (sent == static_cast<ssize_t>(response.size()))
+      {
+        // Complete response sent
+        client.pending_responses.pop();
+      }
+      else
+      {
+        // Partial send - would need to handle this in production
+        std::cerr << "Partial send to client " << client.fd << std::endl;
+        client.pending_responses.pop();
+      }
+    }
+    return true;
+  }
+
+  bool process_client_buffer(ClientState &client)
+  {
+    size_t pos = 0;
+    while (pos < client.buffer.size())
+    {
+      // Find complete command (look for complete RESP message or simple \r\n)
+      size_t end_pos = find_complete_command(client.buffer, pos);
+      if (end_pos == std::string::npos)
+        break; // No complete command yet
+
+      std::string_view request(client.buffer.data() + pos, end_pos - pos);
+
+      // Log request
       std::string log_request;
       log_request.reserve(request.size());
       for (char c : request)
@@ -125,75 +274,197 @@ private:
       }
       std::cout << "Received raw request: " << log_request << std::endl;
 
-      auto parts = parse_resp(request);
-      if (parts.empty())
+      // Parse and execute command
+      execute_command(client, request);
+
+      pos = end_pos;
+    }
+
+    // Remove processed data from buffer
+    client.buffer.erase(0, pos);
+    return true;
+  }
+
+  size_t find_complete_command(const std::string &buffer, size_t start_pos)
+  {
+    // Simple approach: look for \r\n
+    size_t end_pos = buffer.find("\r\n", start_pos);
+    if (end_pos != std::string::npos)
+    {
+      return end_pos + 2;
+    }
+    return std::string::npos;
+  }
+
+  void execute_command(ClientState &client, std::string_view request)
+  {
+    // Skip if client is currently blocked
+    if (g_blocking_manager.is_client_blocked(client.fd))
+    {
+      std::cout << "Ignoring command from blocked client " << client.fd << std::endl;
+      return;
+    }
+
+    auto parts = parse_resp(request);
+    if (parts.empty())
+    {
+      auto start = request.find_first_not_of(" \r\n");
+      auto end = request.find_last_not_of(" \r\n");
+      if (start == std::string_view::npos || end == std::string_view::npos)
       {
-        auto start = request.find_first_not_of(" \r\n");
-        auto end = request.find_last_not_of(" \r\n");
-        if (start == std::string_view::npos || end == std::string_view::npos)
+        handle_ping(client.fd);
+        return;
+      }
+      std::string_view trimmed = request.substr(start, end - start + 1);
+      auto space_pos = trimmed.find(' ');
+      parts.emplace_back(trimmed.substr(0, space_pos));
+      if (space_pos != std::string_view::npos)
+        parts.emplace_back(trimmed.substr(space_pos + 1));
+    }
+
+    if (parts.empty())
+    {
+      handle_ping(client.fd);
+      return;
+    }
+
+    std::string cmd(parts[0]);
+    std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::toupper);
+    cmd.erase(std::remove_if(cmd.begin(), cmd.end(),
+                             [](char c)
+                             { return c == '\n' || c == '\r'; }),
+              cmd.end());
+
+    std::cout << "Received command: " << cmd << std::endl;
+
+    // Handle blocking commands specially
+    if (cmd == CMD_BLPOP)
+    {
+      handle_blocking_command(client, cmd, parts);
+    }
+    else
+    {
+      // Handle regular commands
+      if (cmd == CMD_PING)
+        handle_ping(client.fd);
+      else if (cmd == CMD_ECHO)
+        handle_echo(client.fd, parts);
+      else if (cmd == CMD_SET)
+        handle_set(client.fd, parts, kv_store_);
+      else if (cmd == CMD_GET)
+        handle_get(client.fd, parts, kv_store_);
+      else if (cmd == CMD_LPUSH)
+      {
+        handle_lpush(client.fd, parts, kv_store_);
+        // After LPUSH, try to unblock waiting clients
+        if (parts.size() >= 2)
         {
-          handle_ping(client_fd);
-          continue;
+          std::string key(parts[1]);
+          auto send_callback = [this](int client_fd, const std::string &response)
+          {
+            auto it = clients_.find(client_fd);
+            if (it != clients_.end())
+            {
+              it->second.pending_responses.push(response);
+            }
+          };
+          g_blocking_manager.try_unblock_clients_for_key(key, kv_store_, send_callback);
         }
-        std::string_view trimmed = request.substr(start, end - start + 1);
-        auto space_pos = trimmed.find(' ');
-        parts.emplace_back(trimmed.substr(0, space_pos));
-        if (space_pos != std::string_view::npos)
-          parts.emplace_back(trimmed.substr(space_pos + 1));
       }
-
-      if (!parts.empty())
+      else if (cmd == CMD_RPUSH)
       {
-        std::string cmd(parts[0]);
-        std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::toupper);
-        cmd.erase(std::remove_if(cmd.begin(), cmd.end(),
-                                 [](char c)
-                                 { return c == '\n' || c == '\r'; }),
-                  cmd.end());
-        std::cout << "Received command: " << cmd << std::endl;
-
-        if (cmd == CMD_PING)
-          handle_ping(client_fd);
-        else if (cmd == CMD_ECHO)
-          handle_echo(client_fd, parts);
-        else if (cmd == CMD_SET)
-          handle_set(client_fd, parts, kv_store_);
-        else if (cmd == CMD_GET)
-          handle_get(client_fd, parts, kv_store_);
-        else if (cmd == CMD_LPUSH)
-          handle_lpush(client_fd, parts, kv_store_);
-        else if (cmd == CMD_RPUSH)
-          handle_rpush(client_fd, parts, kv_store_);
-        else if (cmd == CMD_LRANGE)
-          handle_lrange(client_fd, parts, kv_store_);
-        else if (cmd == CMD_LLEN)
-          handle_llen(client_fd, parts, kv_store_);
-        else if (cmd == CMD_LPOP)
-          handle_lpop(client_fd, parts, kv_store_);
-        else if (cmd == CMD_BLPOP)
-          handle_blpop(client_fd, parts, kv_store_);
-        // Add more command handlers as needed
-        // For example, you might want to implement a command to delete keys, or to check if a key exists.
-        // This modular approach allows for easy expansion of the command set without modifying existing code.
-        // Each command handler can be implemented in a separate source file if desired, keeping the code organized and maintainable.
-        else
-          send(client_fd, RESP_NIL, strlen(RESP_NIL), 0);
+        handle_rpush(client.fd, parts, kv_store_);
+        // After RPUSH, try to unblock waiting clients
+        if (parts.size() >= 2)
+        {
+          std::string key(parts[1]);
+          auto send_callback = [this](int client_fd, const std::string &response)
+          {
+            auto it = clients_.find(client_fd);
+            if (it != clients_.end())
+            {
+              it->second.pending_responses.push(response);
+            }
+          };
+          g_blocking_manager.try_unblock_clients_for_key(key, kv_store_, send_callback);
+        }
       }
+      else if (cmd == CMD_LRANGE)
+        handle_lrange(client.fd, parts, kv_store_);
+      else if (cmd == CMD_LLEN)
+        handle_llen(client.fd, parts, kv_store_);
+      else if (cmd == CMD_LPOP)
+        handle_lpop(client.fd, parts, kv_store_);
       else
+        send(client.fd, RESP_NIL, strlen(RESP_NIL), 0);
+    }
+  }
+
+  void handle_blocking_command(ClientState &client, const std::string &cmd, const std::vector<std::string_view> &parts)
+  {
+    if (cmd == CMD_BLPOP)
+    {
+      // Try immediate execution first
+      if (can_execute_blpop_immediately(parts))
       {
-        handle_ping(client_fd);
+        handle_blpop(client.fd, parts, kv_store_);
+        return;
+      }
+
+      // Convert parts to strings and set up blocking
+      std::vector<std::string> keys;
+      std::chrono::duration<double> timeout(0);
+
+      if (parts.size() >= 3)
+      {
+        // Extract keys (all except last parameter which is timeout)
+        for (size_t i = 1; i < parts.size() - 1; ++i)
+        {
+          keys.emplace_back(parts[i]);
+        }
+
+        // Extract timeout
+        try
+        {
+          double timeout_val = std::stod(std::string(parts.back()));
+          timeout = std::chrono::duration<double>(timeout_val);
+        }
+        catch (...)
+        {
+          timeout = std::chrono::duration<double>(0);
+        }
+      }
+
+      std::cout << "Client " << client.fd << " is now blocking on " << cmd << std::endl;
+      g_blocking_manager.add_blocked_client(client.fd, keys, timeout);
+    }
+  }
+
+  bool can_execute_blpop_immediately(const std::vector<std::string_view> &parts)
+  {
+    // Check if any of the specified lists have elements
+    if (parts.size() < 3)
+      return false; // Need at least command, key, timeout
+
+    for (size_t i = 1; i < parts.size() - 1; ++i)
+    {
+      std::string key(parts[i]);
+      auto store_iter = kv_store_.find(key);
+      if (store_iter != kv_store_.end())
+      {
+        // Check if it's a list and has elements
+        auto *list_value = dynamic_cast<ListValue *>(store_iter->second.get());
+        if (list_value && !list_value->values.empty())
+        {
+          return true;
+        }
       }
     }
-    close(client_fd);
+    return false;
   }
 
   int port_;
-  int pool_size_;
-  std::vector<std::thread> pool_;
-  std::queue<int> client_queue_;
-  std::mutex queue_mutex_;
-  std::condition_variable queue_cv_;
-  std::atomic<bool> running_;
+  std::map<int, ClientState> clients_;
   Store kv_store_;
 };
 
