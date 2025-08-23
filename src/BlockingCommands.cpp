@@ -108,17 +108,18 @@ void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Sto
     std::cout << "[BLPOP LOG] Client " << client_fd << " - No elements available, will block..." << std::endl;
     std::vector<std::string> keys = {key};
 
-    // Block client accordingly
+    // Block client accordingly - FIX THE TIMEOUT HANDLING HERE
     if (timeout_seconds == 0.0)
     {
-        auto infinite_timeout = std::chrono::seconds(315360000); // ~10 years
-        std::cout << "[BLPOP LOG] Client " << client_fd << " - BLOCKING INDEFINITELY" << std::endl;
+        // Use chrono::duration<double> directly for consistency
+        std::chrono::duration<double> infinite_timeout(315360000.0); // 10 years in seconds as double
+        std::cout << "[BLPOP LOG] Client " << client_fd << " - BLOCKING INDEFINITELY (timeout=" << infinite_timeout.count() << " seconds)" << std::endl;
         g_blocking_manager.add_blocked_client(client_fd, keys, infinite_timeout);
     }
     else
     {
-        auto timeout = std::chrono::duration<double>(timeout_seconds);
-        std::cout << "[BLPOP LOG] Client " << client_fd << " - BLOCKING FOR " << timeout_seconds << " SECONDS" << std::endl;
+        std::chrono::duration<double> timeout(timeout_seconds);
+        std::cout << "[BLPOP LOG] Client " << client_fd << " - BLOCKING FOR " << timeout.count() << " SECONDS" << std::endl;
         g_blocking_manager.add_blocked_client(client_fd, keys, timeout);
     }
 
