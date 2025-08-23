@@ -109,18 +109,25 @@ void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Sto
     std::vector<std::string> keys = {key};
 
     // Block client accordingly - FIX THE TIMEOUT HANDLING HERE
+    std::cout << "[BLPOP LOG] Client " << client_fd << " - TIMEOUT DEBUG: timeout_seconds=" << timeout_seconds << std::endl;
+    std::cout << "[BLPOP LOG] Client " << client_fd << " - TIMEOUT DEBUG: timeout_seconds == 0.0? " << (timeout_seconds == 0.0 ? "YES" : "NO") << std::endl;
+
     if (timeout_seconds == 0.0)
     {
         // Use chrono::duration<double> directly for consistency
         std::chrono::duration<double> infinite_timeout(315360000.0); // 10 years in seconds as double
-        std::cout << "[BLPOP LOG] Client " << client_fd << " - BLOCKING INDEFINITELY (timeout=" << infinite_timeout.count() << " seconds)" << std::endl;
+        std::cout << "[BLPOP LOG] Client " << client_fd << " - INFINITE TIMEOUT CREATED: " << infinite_timeout.count() << " seconds" << std::endl;
+        std::cout << "[BLPOP LOG] Client " << client_fd << " - CALLING add_blocked_client with infinite timeout..." << std::endl;
         g_blocking_manager.add_blocked_client(client_fd, keys, infinite_timeout);
+        std::cout << "[BLPOP LOG] Client " << client_fd << " - RETURNED from add_blocked_client" << std::endl;
     }
     else
     {
         std::chrono::duration<double> timeout(timeout_seconds);
-        std::cout << "[BLPOP LOG] Client " << client_fd << " - BLOCKING FOR " << timeout.count() << " SECONDS" << std::endl;
+        std::cout << "[BLPOP LOG] Client " << client_fd << " - FINITE TIMEOUT CREATED: " << timeout.count() << " seconds" << std::endl;
+        std::cout << "[BLPOP LOG] Client " << client_fd << " - CALLING add_blocked_client with finite timeout..." << std::endl;
         g_blocking_manager.add_blocked_client(client_fd, keys, timeout);
+        std::cout << "[BLPOP LOG] Client " << client_fd << " - RETURNED from add_blocked_client" << std::endl;
     }
 
     std::cout << "[BLPOP LOG] Client " << client_fd << " - handle_blpop FINISHED (client is now blocked)" << std::endl;

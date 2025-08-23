@@ -10,28 +10,52 @@ BlockingManager g_blocking_manager;
 
 void BlockingManager::add_blocked_client(int client_fd, const std::vector<std::string> &keys, std::chrono::duration<double> timeout)
 {
+    std::cout << "[ADD_BLOCKED LOG] === ENTERING add_blocked_client ===" << std::endl;
+    std::cout << "[ADD_BLOCKED LOG] client_fd: " << client_fd << std::endl;
+    std::cout << "[ADD_BLOCKED LOG] keys.size(): " << keys.size() << std::endl;
+    for (size_t i = 0; i < keys.size(); ++i)
+    {
+        std::cout << "[ADD_BLOCKED LOG] keys[" << i << "]: " << keys[i] << std::endl;
+    }
+    std::cout << "[ADD_BLOCKED LOG] timeout parameter type: std::chrono::duration<double>" << std::endl;
+    std::cout << "[ADD_BLOCKED LOG] timeout.count(): " << timeout.count() << std::endl;
+    std::cout << "[ADD_BLOCKED LOG] timeout.count() type: " << typeid(timeout.count()).name() << std::endl;
+
     std::cout << "[ADD_BLOCKED LOG] Adding client " << client_fd << " with timeout " << timeout.count() << " seconds" << std::endl;
 
     // Determine if this is indefinite blocking
-    bool indefinite = (timeout.count() >= 315360000); // Our "infinite" timeout value
+    double timeout_value = timeout.count();
+    std::cout << "[ADD_BLOCKED LOG] timeout_value (local var): " << timeout_value << std::endl;
+    std::cout << "[ADD_BLOCKED LOG] checking: timeout_value >= 315360000 ?" << std::endl;
+    std::cout << "[ADD_BLOCKED LOG] " << timeout_value << " >= " << 315360000 << " = " << (timeout_value >= 315360000) << std::endl;
+
+    bool indefinite = (timeout_value >= 315360000); // Our "infinite" timeout value
+    std::cout << "[ADD_BLOCKED LOG] indefinite calculation result: " << indefinite << std::endl;
 
     // Create BlockedClient info
+    std::cout << "[ADD_BLOCKED LOG] Creating BlockedClient object..." << std::endl;
     auto blocked_client = std::make_unique<BlockedClient>(client_fd, keys, timeout);
+    std::cout << "[ADD_BLOCKED LOG] BlockedClient created, setting is_indefinite..." << std::endl;
     blocked_client->is_indefinite = indefinite;
+    std::cout << "[ADD_BLOCKED LOG] BlockedClient->is_indefinite set to: " << blocked_client->is_indefinite << std::endl;
 
     std::cout << "[ADD_BLOCKED LOG] Client " << client_fd << " indefinite: " << (indefinite ? "YES" : "NO") << std::endl;
 
     // Store client info
+    std::cout << "[ADD_BLOCKED LOG] Storing client info in client_info_ map..." << std::endl;
     client_info_[client_fd] = std::move(blocked_client);
+    std::cout << "[ADD_BLOCKED LOG] Client info stored" << std::endl;
 
     // Add client to each key's waiting queue
     for (const auto &key : keys)
     {
+        std::cout << "[ADD_BLOCKED LOG] Adding client " << client_fd << " to blocked_clients_ queue for key: " << key << std::endl;
         blocked_clients_[key].push(client_fd);
         std::cout << "[ADD_BLOCKED LOG] Added client " << client_fd << " to queue for key: " << key << std::endl;
     }
 
     std::cout << "[ADD_BLOCKED LOG] Client " << client_fd << " successfully added to blocking manager" << std::endl;
+    std::cout << "[ADD_BLOCKED LOG] === EXITING add_blocked_client ===" << std::endl;
 }
 
 void BlockingManager::remove_blocked_client(int client_fd)
