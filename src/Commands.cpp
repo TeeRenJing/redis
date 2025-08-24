@@ -453,33 +453,41 @@ void handle_type(int client_fd, const std::vector<std::string_view> &parts, Stor
     send(client_fd, response.c_str(), response.size(), 0);
 }
 
-// XADD stream_name entry_id field value [field value ...]
-// Simplified: We always auto-generate IDs (ignore user-provided ID for now)
+// XADD command: Appends an entry to a stream (creating the stream if it doesn't exist).
+// Usage: XADD <key> <id> <field> <value> [<field> <value> ...]
+// Example: XADD mystream 1526919030474-0 temperature 36 humidity 95
+// Returns: The ID of the created entry as a bulk string.
 void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
 {
-    // Validate minimum arguments: XADD stream_name field value
-    if (parts.size() < 4 || (parts.size() - 2) % 2 != 0)
+    // Argument validation:
+    // parts[0] = "XADD"
+    // parts[1] = key
+    // parts[2] = id
+    // parts[3...] = field-value pairs
+    if (parts.size() < 5 || ((parts.size() - 3) % 2 != 0))
     {
-        // RESP error message: starts with '-'
+        // RESP error message for wrong number of arguments
         const char *error = "-ERR wrong number of arguments for 'xadd' command\r\n";
         send(client_fd, error, strlen(error), 0);
         return;
     }
 
     const auto key = std::string(parts[1]);
+    const auto id_arg = std::string(parts[2]); // Provided ID (not yet enforced)
     auto it = kv_store.find(key);
     StreamValue *stream = nullptr;
 
     if (it == kv_store.end())
     {
-        // Create new stream if it doesn't exist
+        // Stream doesn't exist → create it.
+        // Using std::make_unique for exception safety and ownership semantics.
         auto new_stream = std::make_unique<StreamValue>();
         stream = new_stream.get();
         kv_store.emplace(key, std::move(new_stream));
     }
     else
     {
-        // Type safety: ensure the key is a stream
+        // Type safety: ensure the existing key holds a stream.
         stream = dynamic_cast<StreamValue *>(it->second.get());
         if (!stream)
         {
@@ -489,25 +497,36 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Stor
         }
     }
 
-    // Generate unique ID: milliseconds-since-epoch + sequence number
-    using namespace std::chrono;
-    uint64_t ms = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
-    std::string id = std::to_string(ms) + "-" + std::to_string(stream->last_sequence++);
+    // ID generation:
+    // If client specifies "*", generate ID automatically.
+    // Otherwise, use provided ID directly (not enforcing ordering for now).
+    std::string id;
+    if (id_arg == "*")
+    {
+        using namespace std::chrono;
+        uint64_t ms = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+        id = std::to_string(ms) + "-" + std::to_string(stream->last_sequence++);
+    }
+    else
+    {
+        id = id_arg;
+    }
 
-    // Build the stream entry
+    // Build the stream entry with field-value pairs.
     StreamEntry entry;
     entry.id = id;
-
-    for (size_t i = 2; i < parts.size(); i += 2)
+    for (size_t i = 3; i < parts.size(); i += 2)
     {
         std::string field(parts[i]);
         std::string value(parts[i + 1]);
         entry.fields.emplace(std::move(field), std::move(value));
     }
 
+    // Append to the stream: O(1) amortized because std::vector is used.
+    // (Contiguous storage improves cache locality for sequential reads.)
     stream->entries.push_back(std::move(entry));
 
-    // RESP bulk string reply with the ID
+    // RESP bulk string reply containing the entry ID.
     std::string response = "$" + std::to_string(id.size()) + "\r\n" + id + "\r\n";
     send(client_fd, response.c_str(), response.size(), 0);
 }
