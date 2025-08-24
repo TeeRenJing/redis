@@ -31,4 +31,18 @@ struct ListValue : public ValueBase
     std::vector<std::string> values;
 };
 
+struct StreamEntry
+{
+    // Represents a single entry in the stream
+    std::string id;                                      // Format: milliseconds-since-epoch-seq
+    std::unordered_map<std::string, std::string> fields; // Field-value pairs
+};
+
+struct StreamValue : public ValueBase
+{
+    // Streams maintain an ordered list of entries
+    std::vector<StreamEntry> entries;
+    uint64_t last_sequence = 0; // Sequence counter to ensure unique IDs
+};
+
 using Store = std::unordered_map<std::string, std::unique_ptr<ValueBase>>;

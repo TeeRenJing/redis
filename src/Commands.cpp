@@ -452,3 +452,62 @@ void handle_type(int client_fd, const std::vector<std::string_view> &parts, Stor
     std::string response = "+" + type_str + "\r\n";
     send(client_fd, response.c_str(), response.size(), 0);
 }
+
+// XADD stream_name entry_id field value [field value ...]
+// Simplified: We always auto-generate IDs (ignore user-provided ID for now)
+void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    // Validate minimum arguments: XADD stream_name field value
+    if (parts.size() < 4 || (parts.size() - 2) % 2 != 0)
+    {
+        // RESP error message: starts with '-'
+        const char *error = "-ERR wrong number of arguments for 'xadd' command\r\n";
+        send(client_fd, error, strlen(error), 0);
+        return;
+    }
+
+    const auto key = std::string(parts[1]);
+    auto it = kv_store.find(key);
+    StreamValue *stream = nullptr;
+
+    if (it == kv_store.end())
+    {
+        // Create new stream if it doesn't exist
+        auto new_stream = std::make_unique<StreamValue>();
+        stream = new_stream.get();
+        kv_store.emplace(key, std::move(new_stream));
+    }
+    else
+    {
+        // Type safety: ensure the key is a stream
+        stream = dynamic_cast<StreamValue *>(it->second.get());
+        if (!stream)
+        {
+            const char *error = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            send(client_fd, error, strlen(error), 0);
+            return;
+        }
+    }
+
+    // Generate unique ID: milliseconds-since-epoch + sequence number
+    using namespace std::chrono;
+    uint64_t ms = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    std::string id = std::to_string(ms) + "-" + std::to_string(stream->last_sequence++);
+
+    // Build the stream entry
+    StreamEntry entry;
+    entry.id = id;
+
+    for (size_t i = 2; i < parts.size(); i += 2)
+    {
+        std::string field(parts[i]);
+        std::string value(parts[i + 1]);
+        entry.fields.emplace(std::move(field), std::move(value));
+    }
+
+    stream->entries.push_back(std::move(entry));
+
+    // RESP bulk string reply with the ID
+    std::string response = "$" + std::to_string(id.size()) + "\r\n" + id + "\r\n";
+    send(client_fd, response.c_str(), response.size(), 0);
+}
