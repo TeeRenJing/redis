@@ -6,6 +6,7 @@
 #include <algorithm>
 
 // Global instance of BlockingManager (Singleton-like behavior for simplicity)
+// Good Practice: Avoid true singletons where possible, but for simplicity, this acts as one.
 BlockingManager g_blocking_manager;
 
 void BlockingManager::add_blocked_client(
@@ -19,10 +20,12 @@ void BlockingManager::add_blocked_client(
         std::cout << key << " ";
     std::cout << std::endl;
 
+    // Convert generic duration to milliseconds for easier comparison
     const std::chrono::milliseconds timeout_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
     std::cout << "[DEBUG] Timeout passed (ms): " << timeout_ms.count() << std::endl;
 
+    // Concept: Handling zero/negative timeout as indefinite wait
     if (timeout_ms.count() <= 0)
     {
         std::cout << "[DEBUG] Timeout <= 0, using indefinite block" << std::endl;
@@ -30,12 +33,14 @@ void BlockingManager::add_blocked_client(
         return;
     }
 
+    // Large timeout threshold = "indefinite" blocking
     bool is_indefinite = (timeout_ms.count() >= 315360000000LL); // 10 years
 
+    // RAII: use unique_ptr to avoid manual memory management
     auto blocked_client = std::make_unique<BlockedClient>(client_fd, keys, timeout_ms);
     blocked_client->is_indefinite = is_indefinite;
 
-    // Record start time
+    // Record start time using steady_clock (monotonic clock → not affected by system time changes)
     blocked_client->block_start = std::chrono::steady_clock::now();
     std::cout << "[DEBUG] block_start (ms since epoch): "
               << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -43,8 +48,10 @@ void BlockingManager::add_blocked_client(
                      .count()
               << std::endl;
 
+    // Move ownership of blocked_client into the map
     client_info_[client_fd] = std::move(blocked_client);
 
+    // Map keys → waiting client queue
     for (const auto &key : keys)
         blocked_clients_[key].push(client_fd);
 
@@ -86,7 +93,7 @@ void BlockingManager::check_timeouts(
 
         if (now >= timeout_time)
         {
-            std::cout << "[DEBUG] Client " << client_fd << " has TIMED OUT" << std::endl;
+            std::cout << "[TIMEOUT LOG] Client " << client_fd << " has TIMED OUT" << std::endl;
             timed_out_clients.push_back(client_fd);
         }
         else
@@ -102,7 +109,7 @@ void BlockingManager::check_timeouts(
     for (int client_fd : timed_out_clients)
     {
         const std::string nil_response = "*-1\r\n"; // RESP NIL
-        std::cout << "[DEBUG] Sending NIL to client " << client_fd << std::endl;
+        std::cout << "[NIL SEND LOG] Sending NIL due to timeout for client_fd=" << client_fd << std::endl;
         send_callback(client_fd, nil_response);
         remove_blocked_client(client_fd);
     }
@@ -121,15 +128,14 @@ void BlockingManager::add_indefinitely_blocked_client(
 
 void BlockingManager::remove_blocked_client(int client_fd)
 {
-    std::unordered_map<int, std::unique_ptr<BlockedClient>>::iterator it =
-        client_info_.find(client_fd);
+    auto it = client_info_.find(client_fd);
     if (it == client_info_.end())
         return;
 
     std::cout << "[REMOVE LOG] Removing blocked client " << client_fd << std::endl;
 
-    // Remove client_fd from all key queues (O(n*m) worst case but acceptable here)
-    for (std::pair<const std::string, std::queue<int>> &pair : blocked_clients_)
+    // Complexity note: O(n*m) worst case if many keys with same client
+    for (auto &pair : blocked_clients_)
     {
         std::queue<int> temp_queue;
         while (!pair.second.empty())
@@ -144,17 +150,13 @@ void BlockingManager::remove_blocked_client(int client_fd)
         pair.second = std::move(temp_queue);
     }
 
-    // Clean up empty queues
+    // Remove empty key queues (avoid memory bloat)
     for (auto iter = blocked_clients_.begin(); iter != blocked_clients_.end();)
     {
         if (iter->second.empty())
-        {
             iter = blocked_clients_.erase(iter);
-        }
         else
-        {
             ++iter;
-        }
     }
 
     client_info_.erase(it);
@@ -177,17 +179,23 @@ bool BlockingManager::try_unblock_clients_for_key(
 
     ListValue *list_value = dynamic_cast<ListValue *>(store_it->second.get());
     if (!list_value || list_value->values.empty())
+    {
+        std::cout << "[NIL SEND LOG] Key exists but list is empty for client(s) on key=" << key << std::endl;
         return false;
+    }
 
-    // Pop the first waiting client (FIFO)
+    // FIFO: pop the first waiting client
     int client_fd = queue_it->second.front();
     queue_it->second.pop();
 
     // Safety: Ensure client is still registered
     if (client_info_.find(client_fd) == client_info_.end())
+    {
+        std::cout << "[UNBLOCK LOG] Client no longer registered, retrying for key=" << key << std::endl;
         return try_unblock_clients_for_key(key, kv_store, send_callback);
+    }
 
-    // Pop element from list
+    // Pop element from list (front of vector = O(n) removal)
     std::string element = std::move(list_value->values.front());
     list_value->values.erase(list_value->values.begin());
 
