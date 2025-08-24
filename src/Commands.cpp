@@ -406,3 +406,49 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Stor
     // Send the response
     send(client_fd, response.c_str(), response.size(), 0);
 }
+
+// TYPE command: returns the type of value stored at a given key
+// Possible return values: string, list, set, zset, hash, stream, or "none" if the key doesn't exist.
+void handle_type(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    // Defensive programming: always validate input length
+    if (parts.size() < 2)
+    {
+        // RESP simple string for non-existent key type: "none"
+        const char *response = "+none\r\n";
+        send(client_fd, response, strlen(response), 0);
+        return;
+    }
+
+    const auto key = std::string(parts[1]);
+    auto it = kv_store.find(key);
+
+    if (it == kv_store.end())
+    {
+        // Key does not exist
+        const char *response = "+none\r\n";
+        send(client_fd, response, strlen(response), 0);
+        return;
+    }
+
+    // We use dynamic_cast here to safely check the runtime type
+    // Principle: Prefer dynamic_cast only when type information matters (RTTI usage).
+    std::string type_str;
+    if (dynamic_cast<StringValue *>(it->second.get()))
+    {
+        type_str = "string";
+    }
+    else if (dynamic_cast<ListValue *>(it->second.get()))
+    {
+        type_str = "list";
+    }
+    else
+    {
+        // Extend this when adding new types like set, hash, etc.
+        type_str = "none";
+    }
+
+    // RESP simple string reply: starts with '+'
+    std::string response = "+" + type_str + "\r\n";
+    send(client_fd, response.c_str(), response.size(), 0);
+}
