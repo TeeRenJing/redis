@@ -13,50 +13,99 @@ void BlockingManager::add_blocked_client(
     const std::vector<std::string> &keys,
     std::chrono::duration<double> timeout)
 {
-    std::cout << "[ADD_BLOCKED LOG] === ENTERING add_blocked_client ===" << std::endl;
-    std::cout << "[ADD_BLOCKED LOG] client_fd: " << client_fd << std::endl;
+    std::cout << "[DEBUG] ENTER add_blocked_client for client_fd: " << client_fd << std::endl;
+    std::cout << "[DEBUG] Keys to block on: ";
+    for (const auto &key : keys)
+        std::cout << key << " ";
+    std::cout << std::endl;
 
-    // Log keys being watched
-    for (size_t i = 0; i < keys.size(); ++i)
-    {
-        std::cout << "[ADD_BLOCKED LOG] keys[" << i << "]: " << keys[i] << std::endl;
-    }
-
-    // Convert timeout to milliseconds for better precision
     const std::chrono::milliseconds timeout_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
-    std::cout << "[ADD_BLOCKED LOG] timeout(ms): " << timeout_ms.count() << std::endl;
+    std::cout << "[DEBUG] Timeout passed (ms): " << timeout_ms.count() << std::endl;
 
-    // Defensive check: 0 or negative timeout means "block indefinitely"
     if (timeout_ms.count() <= 0)
     {
-        std::cout << "[ADD_BLOCKED LOG] WARNING: timeout is <= 0 ("
-                  << timeout_ms.count()
-                  << "ms), delegating to add_indefinitely_blocked_client()" << std::endl;
+        std::cout << "[DEBUG] Timeout <= 0, using indefinite block" << std::endl;
         add_indefinitely_blocked_client(client_fd, keys);
         return;
     }
 
-    bool is_indefinite = (timeout_ms.count() >= 315360000000LL); // 10 years in ms
+    bool is_indefinite = (timeout_ms.count() >= 315360000000LL); // 10 years
 
-    // Allocate new BlockedClient with RAII (unique_ptr ensures automatic cleanup)
-    std::unique_ptr<BlockedClient> blocked_client =
-        std::make_unique<BlockedClient>(client_fd, keys, timeout_ms);
-
+    auto blocked_client = std::make_unique<BlockedClient>(client_fd, keys, timeout_ms);
     blocked_client->is_indefinite = is_indefinite;
 
-    // Insert into client registry (O(1) average due to unordered_map)
+    // Record start time
+    blocked_client->block_start = std::chrono::steady_clock::now();
+    std::cout << "[DEBUG] block_start (ms since epoch): "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(
+                     blocked_client->block_start.time_since_epoch())
+                     .count()
+              << std::endl;
+
     client_info_[client_fd] = std::move(blocked_client);
 
-    // Add client_fd to each key's blocking queue
-    for (const std::string &key : keys)
-    {
+    for (const auto &key : keys)
         blocked_clients_[key].push(client_fd);
+
+    std::cout << "[DEBUG] Client " << client_fd
+              << " added successfully with timeout " << timeout_ms.count() << "ms" << std::endl;
+}
+
+void BlockingManager::check_timeouts(
+    std::function<void(int, const std::string &)> send_callback)
+{
+    const auto now = std::chrono::steady_clock::now();
+    const long long now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 now.time_since_epoch())
+                                 .count();
+    std::cout << "[DEBUG] check_timeouts() called at " << now_ms << "ms since epoch" << std::endl;
+
+    std::vector<int> timed_out_clients;
+
+    for (const auto &entry : client_info_)
+    {
+        int client_fd = entry.first;
+        const auto &client_ptr = entry.second;
+
+        if (client_ptr->is_indefinite)
+        {
+            std::cout << "[DEBUG] Skipping indefinite client " << client_fd << std::endl;
+            continue;
+        }
+
+        const auto timeout_time = client_ptr->block_start + client_ptr->timeout;
+        const long long timeout_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         timeout_time.time_since_epoch())
+                                         .count();
+
+        std::cout << "[DEBUG] Client " << client_fd
+                  << " block_start=" << std::chrono::duration_cast<std::chrono::milliseconds>(client_ptr->block_start.time_since_epoch()).count()
+                  << "ms, timeout_time=" << timeout_ms
+                  << "ms" << std::endl;
+
+        if (now >= timeout_time)
+        {
+            std::cout << "[DEBUG] Client " << client_fd << " has TIMED OUT" << std::endl;
+            timed_out_clients.push_back(client_fd);
+        }
+        else
+        {
+            const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          timeout_time - now)
+                                          .count();
+            std::cout << "[DEBUG] Client " << client_fd
+                      << " remaining time: " << remaining_ms << "ms" << std::endl;
+        }
     }
 
-    std::cout << "[ADD_BLOCKED LOG] Client " << client_fd
-              << " successfully added to blocking manager with timeout "
-              << timeout_ms.count() << "ms" << std::endl;
+    for (int client_fd : timed_out_clients)
+    {
+        const std::string nil_response = "*-1\r\n"; // RESP NIL
+        std::cout << "[DEBUG] Sending NIL to client " << client_fd << std::endl;
+        send_callback(client_fd, nil_response);
+        remove_blocked_client(client_fd);
+    }
 }
 
 void BlockingManager::add_indefinitely_blocked_client(
@@ -155,74 +204,6 @@ bool BlockingManager::try_unblock_clients_for_key(
 
     remove_blocked_client(client_fd);
     return true;
-}
-
-void BlockingManager::check_timeouts(
-    std::function<void(int, const std::string &)> send_callback)
-{
-    std::cout << "[TIMEOUT LOG] check_timeouts() called" << std::endl;
-
-    // Explicitly declare type to avoid accidental floating-point rounding
-    const std::chrono::steady_clock::time_point now =
-        std::chrono::steady_clock::now();
-    const long long now_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch())
-            .count();
-
-    std::cout << "[TIMEOUT LOG] Current time (ms since epoch): " << now_ms << std::endl;
-
-    std::vector<int> timed_out_clients;
-
-    for (const std::pair<const int, std::unique_ptr<BlockedClient>> &entry : client_info_)
-    {
-        int client_fd = entry.first;
-        const std::unique_ptr<BlockedClient> &blocked_client_ptr = entry.second;
-
-        if (blocked_client_ptr->is_indefinite)
-        {
-            std::cout << "[TIMEOUT LOG] Skipping indefinite client: " << client_fd << std::endl;
-            continue;
-        }
-
-        // Calculate expiration point using the same unit (milliseconds)
-        const std::chrono::steady_clock::time_point timeout_time =
-            blocked_client_ptr->block_start + blocked_client_ptr->timeout;
-
-        if (now >= timeout_time)
-        {
-            std::cout << "[TIMEOUT LOG] Client " << client_fd
-                      << " timed out (expired)" << std::endl;
-            timed_out_clients.push_back(client_fd);
-        }
-        else
-        {
-            const std::chrono::milliseconds remaining_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    timeout_time - now);
-            std::cout << "[TIMEOUT LOG] Client " << client_fd
-                      << " has " << remaining_ms.count()
-                      << "ms remaining" << std::endl;
-        }
-    }
-
-    if (timed_out_clients.empty())
-    {
-        std::cout << "[TIMEOUT LOG] No clients have timed out" << std::endl;
-        return;
-    }
-
-    // Send NIL response to each timed-out client
-    for (int client_fd : timed_out_clients)
-    {
-        const std::string nil_response = "*-1\r\n"; // RESP NIL array
-        send_callback(client_fd, nil_response);
-
-        std::cout << "[TIMEOUT LOG] Sent NIL response to client "
-                  << client_fd << " and removing" << std::endl;
-
-        remove_blocked_client(client_fd);
-    }
 }
 
 // Utility helpers remain unchanged
