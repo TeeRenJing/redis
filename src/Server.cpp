@@ -410,7 +410,7 @@ private:
     if (cmd == CMD_BLPOP)
       handle_blocking_command(client, cmd, parts);
     // Handle regular commands
-    if (cmd == CMD_PING)
+    else if (cmd == CMD_PING)
       handle_ping(client.fd);
     else if (cmd == CMD_ECHO)
       handle_echo(client.fd, parts);
