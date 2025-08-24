@@ -199,54 +199,75 @@ bool BlockingManager::try_unblock_clients_for_key(const std::string &key, Store 
 
     return true;
 }
-
 void BlockingManager::check_timeouts(std::function<void(int, const std::string &)> send_callback)
 {
     std::cout << "[TIMEOUT LOG] check_timeouts() called" << std::endl;
+
+    // Capture current time using steady_clock for measuring durations
+    // (steady_clock is monotonic, not affected by system clock changes)
     auto now = std::chrono::steady_clock::now();
+
+    // Collect clients that have exceeded their blocking timeout
+    // Using a separate vector ensures we don't modify client_info_ while iterating
     std::vector<int> timed_out_clients;
 
+    // Iterating over an unordered_map using range-based for loop
+    // Key: client_fd, Value: unique_ptr<BlockedClient>
     for (const auto &[client_fd, blocked_client_ptr] : client_info_)
     {
-        // Skip indefinite blocking clients
+        // Skip clients that are intentionally blocked indefinitely
         if (blocked_client_ptr->is_indefinite)
         {
-            std::cout << "[TIMEOUT LOG] Client " << client_fd << " has indefinite blocking, skipping" << std::endl;
+            std::cout << "[TIMEOUT LOG] Client " << client_fd
+                      << " has indefinite blocking, skipping" << std::endl;
             continue;
         }
 
-        // Calculate timeout time: block_start + timeout duration
+        // Calculate absolute timeout point:
+        //   block_start (when client started waiting) + timeout (duration requested)
         auto timeout_time = blocked_client_ptr->block_start + blocked_client_ptr->timeout;
 
+        // Compare against current time
         if (now >= timeout_time)
         {
+            // Client has exceeded its timeout
             std::cout << "[TIMEOUT LOG] Client " << client_fd << " has timed out" << std::endl;
             timed_out_clients.push_back(client_fd);
         }
         else
         {
-            auto remaining = timeout_time - now;
-            std::cout << "[TIMEOUT LOG] Client " << client_fd << " has " << remaining.count() << " seconds remaining" << std::endl;
+            // Calculate remaining time in SECONDS (human-friendly)
+            auto remaining_sec = std::chrono::duration_cast<std::chrono::seconds>(timeout_time - now);
+
+            // Good practice: always log in consistent units
+            std::cout << "[TIMEOUT LOG] Client " << client_fd
+                      << " has " << remaining_sec.count() << " seconds remaining" << std::endl;
         }
     }
 
+    // Early exit if no clients timed out
     if (timed_out_clients.empty())
     {
         std::cout << "[TIMEOUT LOG] No clients have timed out" << std::endl;
         return;
     }
 
-    // Send NIL responses and remove timed-out clients
+    // Send NIL responses to timed-out clients and remove them from blocking manager
     for (int client_fd : timed_out_clients)
     {
-        std::cout << "[TIMEOUT LOG] SENDING NIL RESPONSE to timed-out client " << client_fd << std::endl;
-        const std::string nil_response = "*-1\r\n"; // NIL array response
+        std::cout << "[TIMEOUT LOG] SENDING NIL RESPONSE to timed-out client "
+                  << client_fd << std::endl;
 
-        // Use callback instead of direct send()
+        // RESP protocol: NIL response for arrays is "*-1\r\n"
+        const std::string nil_response = "*-1\r\n";
+
+        // Using callback pattern instead of direct send() to respect non-blocking I/O
         send_callback(client_fd, nil_response);
 
-        std::cout << "[TIMEOUT LOG] Client " << client_fd << " queued NIL response" << std::endl;
-        std::cout << "Client " << client_fd << " timed out on BLPOP" << std::endl;
+        std::cout << "[TIMEOUT LOG] Client " << client_fd
+                  << " queued NIL response and will be removed" << std::endl;
+
+        // Remove client from all blocking structures (RAII cleans up unique_ptr automatically)
         remove_blocked_client(client_fd);
     }
 }
