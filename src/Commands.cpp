@@ -442,6 +442,10 @@ void handle_type(int client_fd, const std::vector<std::string_view> &parts, Stor
     {
         type_str = "list";
     }
+    else if (dynamic_cast<StreamValue *>(it->second.get()))
+    {
+        type_str = "stream";
+    }
     else
     {
         // Extend this when adding new types like set, hash, etc.
