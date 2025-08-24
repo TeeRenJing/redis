@@ -91,8 +91,8 @@ public:
 
       // Use select with timeout to periodically check blocking operations
       struct timeval timeout;
-      timeout.tv_sec = 1; // 1 second timeout
-      timeout.tv_usec = 0;
+      timeout.tv_sec = 0; // 1 second timeout
+      timeout.tv_usec = 100000;
 
       int activity = select(max_fd + 1, &read_fds, &write_fds, nullptr, &timeout);
 

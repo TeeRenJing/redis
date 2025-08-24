@@ -12,13 +12,16 @@
 struct BlockedClient
 {
     int client_fd;
-    std::vector<std::string> keys;
-    std::chrono::duration<double> timeout;
-    std::chrono::steady_clock::time_point block_start;
-    bool is_indefinite;
+    std::vector<std::string> keys;                     // Keys the client is waiting on
+    std::chrono::steady_clock::time_point block_start; // When the client started blocking
+    std::chrono::milliseconds timeout;                 // Timeout duration
+    bool is_indefinite = false;                        // True if blocking indefinitely
 
-    BlockedClient(int fd, const std::vector<std::string> &k, std::chrono::duration<double> t)
-        : client_fd(fd), keys(k), timeout(t), block_start(std::chrono::steady_clock::now()), is_indefinite(false) {}
+    BlockedClient(int fd, const std::vector<std::string> &k, std::chrono::milliseconds t)
+        : client_fd(fd), keys(k), timeout(t)
+    {
+        block_start = std::chrono::steady_clock::now();
+    }
 };
 
 class BlockingManager
