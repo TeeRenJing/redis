@@ -5,110 +5,417 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include <cstring> // for std::strlen (if ever needed)
-
-// ============================
-// RESP PROTOCOL CONSTANTS
-// ============================
-// Using constexpr std::string_view allows the compiler to know the data and size at compile-time.
-// This removes the need for strlen() calls at runtime, improving performance.
-constexpr std::string_view RESP_PONG = "+PONG\r\n";
-constexpr std::string_view RESP_OK = "+OK\r\n";
-constexpr std::string_view RESP_NIL = "$-1\r\n";
-constexpr std::string_view RESP_EMPTY_ARRAY = "*0\r\n";
-constexpr std::string_view RESP_ERR_GENERIC = "-ERR unknown command\r\n";
-constexpr std::string_view RESP_ERR_XADD_EQ = "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n";
-constexpr std::string_view RESP_ERR_XADD_ZERO = "-ERR The ID specified in XADD must be greater than 0-0\r\n";
-
-// ============================
-// Example Global Store
-// ============================
-// These are kept as std::string → std::string because Redis keys/values are binary-safe.
-// We use std::string_view only temporarily when parsing to avoid extra allocations.
-static std::unordered_map<std::string, std::string> kv_store;
+#include <memory>
+#include <chrono>
+#include <algorithm>
+#include <cstring>
 
 // ============================
 // SEND HELPER
 // ============================
-// A small wrapper to reduce repetitive .data()/.size() boilerplate.
+// Wrapper to send RESP strings safely.
+inline void send_response(int client_fd, const char *resp)
+{
+    send(client_fd, resp, strlen(resp), 0);
+}
+
 inline void send_response(int client_fd, std::string_view resp)
 {
-    // Using .data() and .size() is safer than strlen() because it works with binary data too.
     send(client_fd, resp.data(), resp.size(), 0);
 }
 
 // ============================
-// PING COMMAND
+// PING
 // ============================
-// Very frequent → optimized using compile-time constant.
 void handle_ping(int client_fd)
 {
     send_response(client_fd, RESP_PONG);
 }
 
 // ============================
-// GET COMMAND
+// ECHO
 // ============================
-// Demonstrates string_view → string only when necessary.
-void handle_get(int client_fd, const std::vector<std::string_view> &parts)
+void handle_echo(int client_fd, const std::vector<std::string_view> &parts)
 {
-    if (parts.size() != 2)
+    if (parts.size() < 2)
     {
-        send_response(client_fd, RESP_ERR_GENERIC);
+        send_response(client_fd, RESP_NIL);
         return;
     }
 
-    const std::string key(parts[1]); // convert only once here for map lookup
-    auto it = kv_store.find(key);
-    if (it == kv_store.end())
-    {
-        send_response(client_fd, RESP_NIL); // RESP NIL for non-existing key
-    }
-    else
-    {
-        const std::string &val = it->second;
-        // Build bulk string: "$<len>\r\n<value>\r\n"
-        std::string resp = "$" + std::to_string(val.size()) + "\r\n" + val + "\r\n";
-        send(client_fd, resp.data(), resp.size(), 0);
-    }
+    const auto &val = parts[1];
+    std::string resp = "$" + std::to_string(val.size()) + "\r\n" + std::string(val) + "\r\n";
+    send_response(client_fd, resp);
 }
 
 // ============================
-// SET COMMAND
+// SET
 // ============================
-void handle_set(int client_fd, const std::vector<std::string_view> &parts)
+void handle_set(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
 {
-    if (parts.size() != 3)
+    if (parts.size() < 3)
     {
-        send_response(client_fd, RESP_ERR_GENERIC);
+        send_response(client_fd, RESP_NIL);
         return;
     }
 
-    // std::string_view → std::string conversion only once (map requires owning type)
-    kv_store[std::string(parts[1])] = std::string(parts[2]);
+    const auto key = std::string(parts[1]);
+    const auto value = std::string(parts[2]);
+    auto expiry = std::chrono::steady_clock::time_point::max();
+
+    // Handle optional PX argument
+    if (parts.size() >= 5 && parts[3] == PX_ARG)
+    {
+        try
+        {
+            auto px = std::stoll(std::string(parts[4]));
+            expiry = std::chrono::steady_clock::now() + std::chrono::milliseconds(px);
+        }
+        catch (...)
+        {
+            // Ignore invalid expiry, treat as no expiry
+        }
+    }
+
+    kv_store[key] = std::make_unique<StringValue>(value, expiry);
     send_response(client_fd, RESP_OK);
 }
 
 // ============================
-// XADD COMMAND
+// GET
 // ============================
-// Validates stream ID rules (similar to Redis) and sends proper RESP simple errors.
-// Handles the XADD command: appends an entry to a Redis-like stream with a specified ID.
-// Arguments format: XADD <key> <id> field value [field value ...]
-// Example: XADD mystream 1-0 foo bar
-void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &store)
+void handle_get(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
 {
-    // Ensure minimal argument count: XADD requires at least key, id, and one field-value pair
-    if (parts.size() < 4)
+    if (parts.size() < 2)
     {
-        send_response(client_fd, RESP_ERR_GENERIC); // Send a generic error (RESP simple error)
+        send_response(client_fd, RESP_NIL);
         return;
     }
 
-    const std::string key(parts[1]);         // Extract the stream key
-    const std::string_view id_sv = parts[2]; // Extract the ID (e.g., "1-1")
+    const auto key = std::string(parts[1]);
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
+    {
+        send_response(client_fd, RESP_NIL);
+        return;
+    }
 
-    // Parse the stream ID in the format milliseconds-seq
+    if (auto *str_val = dynamic_cast<StringValue *>(it->second.get()))
+    {
+        if (str_val->is_expired())
+        {
+            kv_store.erase(it);
+            send_response(client_fd, RESP_NIL);
+            return;
+        }
+        std::string resp = "$" + std::to_string(str_val->value.size()) + "\r\n" + str_val->value + "\r\n";
+        send_response(client_fd, resp);
+    }
+    else
+    {
+        send_response(client_fd, RESP_NIL);
+    }
+}
+
+// ============================
+// LPUSH
+// ============================
+void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() < 3)
+    {
+        send_response(client_fd, RESP_NIL);
+        return;
+    }
+
+    const std::string key(parts[1]);
+    ListValue *list_ptr = nullptr;
+
+    if (auto it = kv_store.find(key); it != kv_store.end())
+    {
+        list_ptr = dynamic_cast<ListValue *>(it->second.get());
+        if (!list_ptr)
+        {
+            send_response(client_fd, RESP_NIL);
+            return;
+        }
+    }
+    else
+    {
+        auto list = std::make_unique<ListValue>();
+        list_ptr = list.get();
+        kv_store[key] = std::move(list);
+    }
+
+    // Push left (front) in order
+    for (size_t i = 2; i < parts.size(); ++i)
+    {
+        list_ptr->values.insert(list_ptr->values.begin(), std::string(parts[i]));
+    }
+
+    std::string resp = ":" + std::to_string(list_ptr->values.size()) + "\r\n";
+    send_response(client_fd, resp);
+
+    // Unblock any waiting clients
+    g_blocking_manager.try_unblock_clients_for_key(key, kv_store,
+                                                   [](int fd, const std::string &resp)
+                                                   { send(fd, resp.data(), resp.size(), 0); });
+}
+
+// ============================
+// RPUSH
+// ============================
+void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() < 3)
+    {
+        send_response(client_fd, RESP_NIL);
+        return;
+    }
+
+    const std::string key(parts[1]);
+    ListValue *list_ptr = nullptr;
+
+    if (auto it = kv_store.find(key); it != kv_store.end())
+    {
+        list_ptr = dynamic_cast<ListValue *>(it->second.get());
+        if (!list_ptr)
+        {
+            send_response(client_fd, RESP_NIL);
+            return;
+        }
+    }
+    else
+    {
+        auto list = std::make_unique<ListValue>();
+        list_ptr = list.get();
+        kv_store[key] = std::move(list);
+    }
+
+    for (size_t i = 2; i < parts.size(); ++i)
+        list_ptr->values.push_back(std::string(parts[i]));
+
+    std::string resp = ":" + std::to_string(list_ptr->values.size()) + "\r\n";
+    send_response(client_fd, resp);
+
+    g_blocking_manager.try_unblock_clients_for_key(key, kv_store,
+                                                   [](int fd, const std::string &resp)
+                                                   { send(fd, resp.data(), resp.size(), 0); });
+}
+
+// ============================
+// LLEN
+// ============================
+void handle_llen(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() < 2)
+    {
+        send_response(client_fd, RESP_NIL);
+        return;
+    }
+
+    const auto key = std::string(parts[1]);
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
+    {
+        send_response(client_fd, ":0\r\n");
+        return;
+    }
+
+    if (auto *list_val = dynamic_cast<ListValue *>(it->second.get()))
+    {
+        send_response(client_fd, (":" + std::to_string(list_val->values.size()) + "\r\n").c_str());
+    }
+    else
+    {
+        send_response(client_fd, RESP_NIL);
+    }
+}
+
+// ============================
+// LPOP
+// ============================
+void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() < 2)
+    {
+        send_response(client_fd, RESP_NIL);
+        return;
+    }
+
+    const std::string key(parts[1]);
+    int count = 1;
+
+    if (parts.size() > 2)
+    {
+        try
+        {
+            count = std::stoi(std::string(parts[2]));
+        }
+        catch (...)
+        {
+            send_response(client_fd, "-ERR value is not an integer or out of range\r\n");
+            return;
+        }
+        if (count < 0)
+        {
+            send_response(client_fd, "-ERR value is not an integer or out of range\r\n");
+            return;
+        }
+    }
+
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
+    {
+        send_response(client_fd, (parts.size() > 2) ? RESP_EMPTY_ARRAY : RESP_NIL);
+        return;
+    }
+
+    auto *list_val = dynamic_cast<ListValue *>(it->second.get());
+    if (!list_val)
+    {
+        send_response(client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+        return;
+    }
+    if (list_val->values.empty())
+    {
+        send_response(client_fd, (parts.size() > 2) ? RESP_EMPTY_ARRAY : RESP_NIL);
+        return;
+    }
+
+    size_t elements_to_pop = std::min(static_cast<size_t>(count), list_val->values.size());
+    std::string resp;
+
+    if (parts.size() <= 2)
+    {
+        resp = "$" + std::to_string(list_val->values.front().size()) + "\r\n" + list_val->values.front() + "\r\n";
+        list_val->values.erase(list_val->values.begin());
+    }
+    else
+    {
+        resp = "*" + std::to_string(elements_to_pop) + "\r\n";
+        for (size_t i = 0; i < elements_to_pop; ++i)
+            resp += "$" + std::to_string(list_val->values[i].size()) + "\r\n" + list_val->values[i] + "\r\n";
+        list_val->values.erase(list_val->values.begin(), list_val->values.begin() + elements_to_pop);
+    }
+
+    if (list_val->values.empty())
+        kv_store.erase(it);
+    send_response(client_fd, resp);
+}
+// ============================
+// LRANGE
+// ============================
+// LRANGE <key> <start> <stop>
+// Returns a RESP array of elements in the specified range.
+// Negative indices are supported (e.g., -1 is the last element).
+void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() != 4)
+    {
+        send_response(client_fd, RESP_ERR_GENERIC);
+        return;
+    }
+
+    const std::string key(parts[1]);
+    int start, stop;
+    try
+    {
+        start = std::stoi(std::string(parts[2]));
+        stop = std::stoi(std::string(parts[3]));
+    }
+    catch (...)
+    {
+        send_response(client_fd, "-ERR start or stop is not an integer\r\n");
+        return;
+    }
+
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
+    {
+        send_response(client_fd, RESP_EMPTY_ARRAY);
+        return;
+    }
+
+    auto *list_val = dynamic_cast<ListValue *>(it->second.get());
+    if (!list_val)
+    {
+        send_response(client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+        return;
+    }
+
+    const auto &values = list_val->values;
+    int len = static_cast<int>(values.size());
+
+    // Adjust negative indices
+    if (start < 0)
+        start = len + start;
+    if (stop < 0)
+        stop = len + stop;
+    start = std::max(0, start);
+    stop = std::min(len - 1, stop);
+
+    if (start > stop || start >= len)
+    {
+        send_response(client_fd, RESP_EMPTY_ARRAY);
+        return;
+    }
+
+    std::string resp = "*" + std::to_string(stop - start + 1) + "\r\n";
+    for (int i = start; i <= stop; ++i)
+    {
+        resp += "$" + std::to_string(values[i].size()) + "\r\n" + values[i] + "\r\n";
+    }
+
+    send_response(client_fd, resp);
+}
+
+// ============================
+// TYPE
+// ============================
+void handle_type(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() < 2)
+    {
+        send_response(client_fd, "+none\r\n");
+        return;
+    }
+
+    const auto key = std::string(parts[1]);
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
+    {
+        send_response(client_fd, "+none\r\n");
+        return;
+    }
+
+    std::string type_str;
+    if (dynamic_cast<StringValue *>(it->second.get()))
+        type_str = "string";
+    else if (dynamic_cast<ListValue *>(it->second.get()))
+        type_str = "list";
+    else if (dynamic_cast<StreamValue *>(it->second.get()))
+        type_str = "stream";
+    else
+        type_str = "none";
+
+    send_response(client_fd, ("+" + type_str + "\r\n").c_str());
+}
+
+// ============================
+// XADD
+// ============================
+void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() < 5 || ((parts.size() - 3) % 2 != 0))
+    {
+        send_response(client_fd, "-ERR wrong number of arguments for 'xadd' command\r\n");
+        return;
+    }
+
+    const std::string key(parts[1]);
+    const std::string_view id_sv = parts[2];
+
     auto dash = id_sv.find('-');
     if (dash == std::string_view::npos)
     {
@@ -116,37 +423,33 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Stor
         return;
     }
 
-    // Convert both parts to integers: this ensures lexicographic order = numeric order
     uint64_t ms = std::stoull(std::string(id_sv.substr(0, dash)));
     uint64_t seq = std::stoull(std::string(id_sv.substr(dash + 1)));
 
-    // Rule 1: ID must be strictly greater than 0-0
     if (ms == 0 && seq == 0)
     {
-        send_response(client_fd, RESP_ERR_XADD_ZERO); // "-ERR The ID specified in XADD must be greater than 0-0\r\n"
+        send_response(client_fd, RESP_ERR_XADD_ZERO);
         return;
     }
 
-    // Look up the stream, create if missing
-    auto it = store.find(key);
     StreamValue *stream;
-    if (it == store.end())
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
     {
         auto new_stream = std::make_unique<StreamValue>();
         stream = new_stream.get();
-        store[key] = std::move(new_stream);
+        kv_store[key] = std::move(new_stream);
     }
     else
     {
         stream = dynamic_cast<StreamValue *>(it->second.get());
         if (!stream)
         {
-            send_response(client_fd, RESP_ERR_GENERIC); // Wrong type
+            send_response(client_fd, RESP_ERR_GENERIC);
             return;
         }
     }
 
-    // Rule 2: New ID must be greater than the last entry
     if (!stream->entries.empty())
     {
         const auto &last_id = stream->entries.back().id;
@@ -156,31 +459,20 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Stor
 
         if (ms < last_ms || (ms == last_ms && seq <= last_seq))
         {
-            send_response(client_fd, RESP_ERR_XADD_EQ); // "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n"
+            send_response(client_fd, RESP_ERR_XADD_EQ);
             return;
         }
     }
 
-    // Construct and append the stream entry
     StreamEntry entry;
     entry.id = std::string(id_sv);
-    entry.fields.reserve((parts.size() - 3) / 2); // Preallocate field-value pairs for efficiency
+    entry.fields.reserve((parts.size() - 3) / 2);
 
-    // Populate field-value pairs (pairs start from parts[3])
     for (size_t i = 3; i + 1 < parts.size(); i += 2)
-    {
         entry.fields.emplace(std::string(parts[i]), std::string(parts[i + 1]));
-    }
 
-    // Append to stream
     stream->entries.push_back(std::move(entry));
 
-    // Return the newly added ID as a RESP bulk string
-    std::string resp = "$" + std::to_string(id_sv.size()) + "\r\n" +
-                       std::string(id_sv) + "\r\n";
-    send(client_fd, resp.data(), resp.size(), 0);
+    std::string resp = "$" + std::to_string(id_sv.size()) + "\r\n" + std::string(id_sv) + "\r\n";
+    send_response(client_fd, resp);
 }
-
-// ============================
-// Additional commands would follow the same pattern
-// ============================
