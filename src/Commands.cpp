@@ -416,45 +416,49 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Stor
     const std::string key(parts[1]);
     const std::string_view id_sv = parts[2];
 
-    // Check if sequence number is auto-generate (*)
+    // Check if full auto-generation is requested
+    bool full_auto = (id_sv == "*");
     bool auto_seq = false;
     uint64_t ms = 0;
     uint64_t seq = 0;
 
-    auto dash = id_sv.find('-');
-    if (dash == std::string_view::npos)
+    if (!full_auto)
     {
-        send_response(client_fd, RESP_ERR_GENERIC);
-        return;
-    }
+        auto dash = id_sv.find('-');
+        if (dash == std::string_view::npos)
+        {
+            send_response(client_fd, RESP_ERR_GENERIC);
+            return;
+        }
 
-    // Parse time part
-    std::string ms_str(id_sv.substr(0, dash));
-    if (ms_str.empty() || ms_str == "*")
-    {
-        // This will be handled in the next stage for full auto-generation
-        send_response(client_fd, RESP_ERR_GENERIC);
-        return;
-    }
+        // Parse time part
+        std::string ms_str(id_sv.substr(0, dash));
+        if (ms_str.empty() || ms_str == "*")
+        {
+            // Partial auto-generation (time part is *) - not supported in this stage
+            send_response(client_fd, RESP_ERR_GENERIC);
+            return;
+        }
 
-    ms = std::stoull(ms_str);
+        ms = std::stoull(ms_str);
 
-    // Parse sequence part
-    std::string seq_str(id_sv.substr(dash + 1));
-    if (seq_str == "*")
-    {
-        auto_seq = true;
-        seq = 0; // Will be determined later based on existing entries
-    }
-    else
-    {
-        seq = std::stoull(seq_str);
-    }
+        // Parse sequence part
+        std::string seq_str(id_sv.substr(dash + 1));
+        if (seq_str == "*")
+        {
+            auto_seq = true;
+            seq = 0; // Will be determined later based on existing entries
+        }
+        else
+        {
+            seq = std::stoull(seq_str);
+        }
 
-    if (ms == 0 && seq == 0 && !auto_seq)
-    {
-        send_response(client_fd, RESP_ERR_XADD_ZERO);
-        return;
+        if (ms == 0 && seq == 0 && !auto_seq)
+        {
+            send_response(client_fd, RESP_ERR_XADD_ZERO);
+            return;
+        }
     }
 
     StreamValue *stream;
@@ -475,8 +479,46 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Stor
         }
     }
 
-    // Handle auto-sequence number generation
-    if (auto_seq)
+    // Handle full auto-generation (*)
+    if (full_auto)
+    {
+        // Get current time in milliseconds
+        auto now = std::chrono::system_clock::now();
+        auto now_ms = std::chrono::time_point_cast<std::chrono::milliseconds>(now);
+        ms = now_ms.time_since_epoch().count();
+
+        if (stream->entries.empty())
+        {
+            // If no entries, sequence number defaults to 0
+            seq = 0;
+        }
+        else
+        {
+            const auto &last_id = stream->entries.back().id;
+            auto dash_last = last_id.find('-');
+            uint64_t last_ms = std::stoull(last_id.substr(0, dash_last));
+            uint64_t last_seq = std::stoull(last_id.substr(dash_last + 1));
+
+            if (ms > last_ms)
+            {
+                // New timestamp, start sequence from 0
+                seq = 0;
+            }
+            else if (ms == last_ms)
+            {
+                // Same timestamp, increment sequence number
+                seq = last_seq + 1;
+            }
+            else
+            {
+                // Current time is less than last timestamp - use last timestamp + 1ms
+                ms = last_ms + 1;
+                seq = 0;
+            }
+        }
+    }
+    // Handle auto-sequence number generation only
+    else if (auto_seq)
     {
         if (stream->entries.empty())
         {
