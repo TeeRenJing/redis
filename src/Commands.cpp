@@ -416,6 +416,11 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Stor
     const std::string key(parts[1]);
     const std::string_view id_sv = parts[2];
 
+    // Check if sequence number is auto-generate (*)
+    bool auto_seq = false;
+    uint64_t ms = 0;
+    uint64_t seq = 0;
+
     auto dash = id_sv.find('-');
     if (dash == std::string_view::npos)
     {
@@ -423,10 +428,30 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Stor
         return;
     }
 
-    uint64_t ms = std::stoull(std::string(id_sv.substr(0, dash)));
-    uint64_t seq = std::stoull(std::string(id_sv.substr(dash + 1)));
+    // Parse time part
+    std::string ms_str(id_sv.substr(0, dash));
+    if (ms_str.empty() || ms_str == "*")
+    {
+        // This will be handled in the next stage for full auto-generation
+        send_response(client_fd, RESP_ERR_GENERIC);
+        return;
+    }
 
-    if (ms == 0 && seq == 0)
+    ms = std::stoull(ms_str);
+
+    // Parse sequence part
+    std::string seq_str(id_sv.substr(dash + 1));
+    if (seq_str == "*")
+    {
+        auto_seq = true;
+        seq = 0; // Will be determined later based on existing entries
+    }
+    else
+    {
+        seq = std::stoull(seq_str);
+    }
+
+    if (ms == 0 && seq == 0 && !auto_seq)
     {
         send_response(client_fd, RESP_ERR_XADD_ZERO);
         return;
@@ -450,22 +475,63 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Stor
         }
     }
 
-    if (!stream->entries.empty())
+    // Handle auto-sequence number generation
+    if (auto_seq)
     {
-        const auto &last_id = stream->entries.back().id;
-        auto dash_last = last_id.find('-');
-        uint64_t last_ms = std::stoull(last_id.substr(0, dash_last));
-        uint64_t last_seq = std::stoull(last_id.substr(dash_last + 1));
-
-        if (ms < last_ms || (ms == last_ms && seq <= last_seq))
+        if (stream->entries.empty())
         {
-            send_response(client_fd, RESP_ERR_XADD_EQ);
-            return;
+            // If no entries, sequence number defaults to 0
+            // Exception: if time part is 0, sequence number should be 1
+            seq = (ms == 0) ? 1 : 0;
+        }
+        else
+        {
+            const auto &last_id = stream->entries.back().id;
+            auto dash_last = last_id.find('-');
+            uint64_t last_ms = std::stoull(last_id.substr(0, dash_last));
+            uint64_t last_seq = std::stoull(last_id.substr(dash_last + 1));
+
+            if (ms > last_ms)
+            {
+                // New timestamp, start sequence from 0
+                seq = 0;
+            }
+            else if (ms == last_ms)
+            {
+                // Same timestamp, increment sequence number
+                seq = last_seq + 1;
+            }
+            else
+            {
+                // ms < last_ms - invalid (timestamp must be >= last timestamp)
+                send_response(client_fd, RESP_ERR_XADD_EQ);
+                return;
+            }
+        }
+    }
+    else
+    {
+        // Validate explicit sequence number
+        if (!stream->entries.empty())
+        {
+            const auto &last_id = stream->entries.back().id;
+            auto dash_last = last_id.find('-');
+            uint64_t last_ms = std::stoull(last_id.substr(0, dash_last));
+            uint64_t last_seq = std::stoull(last_id.substr(dash_last + 1));
+
+            if (ms < last_ms || (ms == last_ms && seq <= last_seq))
+            {
+                send_response(client_fd, RESP_ERR_XADD_EQ);
+                return;
+            }
         }
     }
 
+    // Construct the final ID
+    std::string final_id = std::to_string(ms) + "-" + std::to_string(seq);
+
     StreamEntry entry;
-    entry.id = std::string(id_sv);
+    entry.id = final_id;
     entry.fields.reserve((parts.size() - 3) / 2);
 
     for (size_t i = 3; i + 1 < parts.size(); i += 2)
@@ -473,6 +539,6 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Stor
 
     stream->entries.push_back(std::move(entry));
 
-    std::string resp = "$" + std::to_string(id_sv.size()) + "\r\n" + std::string(id_sv) + "\r\n";
+    std::string resp = "$" + std::to_string(final_id.size()) + "\r\n" + final_id + "\r\n";
     send_response(client_fd, resp);
 }
