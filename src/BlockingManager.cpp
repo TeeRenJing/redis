@@ -66,7 +66,6 @@ void BlockingManager::check_timeouts(
     const long long now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                  now.time_since_epoch())
                                  .count();
-    std::cout << "[DEBUG] check_timeouts() called at " << now_ms << "ms since epoch" << std::endl;
 
     std::vector<int> timed_out_clients;
 
@@ -85,11 +84,6 @@ void BlockingManager::check_timeouts(
         const long long timeout_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                          timeout_time.time_since_epoch())
                                          .count();
-
-        std::cout << "[DEBUG] Client " << client_fd
-                  << " block_start=" << std::chrono::duration_cast<std::chrono::milliseconds>(client_ptr->block_start.time_since_epoch()).count()
-                  << "ms, timeout_time=" << timeout_ms
-                  << "ms" << std::endl;
 
         if (now >= timeout_time)
         {

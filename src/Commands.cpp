@@ -584,3 +584,131 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Stor
     std::string resp = "$" + std::to_string(final_id.size()) + "\r\n" + final_id + "\r\n";
     send_response(client_fd, resp);
 }
+
+// ============================
+// XRANGE (simple)
+// ============================
+// XRANGE <key> <start> <end>
+// Returns an array of entries: [ id, [field1, value1, ...] ]
+struct XId
+{
+    uint64_t ms;
+    uint64_t seq;
+};
+
+static bool parse_xid_simple(std::string_view sv, bool is_start, XId &out)
+{
+    try
+    {
+        auto dash = sv.find('-');
+        if (dash == std::string_view::npos)
+        {
+            // only ms
+            out.ms = std::stoull(std::string(sv));
+            out.seq = is_start ? 0ULL : UINT64_MAX;
+        }
+        else
+        {
+            out.ms = std::stoull(std::string(sv.substr(0, dash)));
+            out.seq = std::stoull(std::string(sv.substr(dash + 1)));
+        }
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+static inline int cmp_xid(const XId &a, const XId &b)
+{
+    if (a.ms != b.ms)
+        return (a.ms < b.ms) ? -1 : 1;
+    if (a.seq != b.seq)
+        return (a.seq < b.seq) ? -1 : 1;
+    return 0;
+}
+
+static inline XId parse_entry_id_simple(const std::string &id)
+{
+    auto dash = id.find('-');
+    // Assumes well-formed ids inside the stream
+    return XId{std::stoull(id.substr(0, dash)),
+               std::stoull(id.substr(dash + 1))};
+}
+
+void handle_xrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+{
+    if (parts.size() != 4)
+    {
+        send_response(client_fd, "-ERR wrong number of arguments for 'xrange'\r\n");
+        return;
+    }
+
+    const std::string key(parts[1]);
+    const auto start_sv = parts[2];
+    const auto end_sv = parts[3];
+
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
+    {
+        send_response(client_fd, RESP_EMPTY_ARRAY);
+        return;
+    }
+
+    auto *stream = dynamic_cast<StreamValue *>(it->second.get());
+    if (!stream)
+    {
+        send_response(client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+        return;
+    }
+
+    XId start_id{}, end_id{};
+    if (!parse_xid_simple(start_sv, /*is_start=*/true, start_id) ||
+        !parse_xid_simple(end_sv, /*is_start=*/false, end_id))
+    {
+        send_response(client_fd, "-ERR invalid stream ID\r\n");
+        return;
+    }
+    if (cmp_xid(start_id, end_id) > 0)
+    {
+        send_response(client_fd, RESP_EMPTY_ARRAY);
+        return;
+    }
+
+    // First pass: count matches
+    size_t count = 0;
+    for (const auto &e : stream->entries)
+    {
+        XId eid = parse_entry_id_simple(e.id);
+        if (cmp_xid(eid, start_id) < 0)
+            continue;
+        if (cmp_xid(eid, end_id) > 0)
+            break;
+        ++count;
+    }
+
+    // Build RESP
+    std::string resp = "*" + std::to_string(count) + "\r\n";
+    for (const auto &e : stream->entries)
+    {
+        XId eid = parse_entry_id_simple(e.id);
+        if (cmp_xid(eid, start_id) < 0)
+            continue;
+        if (cmp_xid(eid, end_id) > 0)
+            break;
+
+        resp += "*2\r\n"; // [id, [fields...]]
+        resp += "$" + std::to_string(e.id.size()) + "\r\n" + e.id + "\r\n";
+
+        const size_t n = e.fields.size() * 2;
+        resp += "*" + std::to_string(n) + "\r\n";
+        for (const auto &kv : e.fields)
+        {
+            resp += "$" + std::to_string(kv.first.size()) + "\r\n" + kv.first + "\r\n";
+            resp += "$" + std::to_string(kv.second.size()) + "\r\n" + kv.second + "\r\n";
+        }
+    }
+
+    send_response(client_fd, resp);
+}
