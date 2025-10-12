@@ -676,65 +676,101 @@ void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Sto
 }
 
 // ============================
-// XREAD (simple, exclusive)
+// XREAD (multi-stream, exclusive, happy path)
 // ============================
-// XREAD STREAMS <key> <id>
-// Returns: array of streams -> [ [ key, [ [id, [f1,v1,...]], ... ] ] ]
+// XREAD STREAMS <k1> <k2> ... <id1> <id2> ...
 void handle_xread(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    const std::string key_name(args[2]);
-    const std::string_view from_id_sv = args[3];
 
-    auto store_it = kv_store.find(key_name);
-    if (store_it == kv_store.end())
+    const size_t total = args.size();
+    const size_t num_pairs = (total - 3) / 2; // N keys + N ids
+
+    const size_t keys_start = 2;
+    const size_t ids_start = 2 + num_pairs;
+
+    // We’ll accumulate only streams that have matches
+    struct StreamChunk
     {
-        send_response(client_fd, RESP_NIL);
-        return;
-    }
+        const std::string key; // copy the key so we can use its size
+        std::vector<const StreamEntry *> entries;
+    };
+    std::vector<StreamChunk> result;
+    result.reserve(num_pairs);
 
-    auto *stream_value = dynamic_cast<StreamValue *>(store_it->second.get());
-    const XId from_id = *parse_xid_simple(from_id_sv, /*is_start=*/true);
-
-    std::vector<const StreamEntry *> matched;
-    matched.reserve(stream_value->entries.size());
-    for (const auto &entry : stream_value->entries)
+    for (size_t i = 0; i < num_pairs; ++i)
     {
-        const XId entry_id = parse_entry_id_simple(entry.id);
-        if (cmp_xid(entry_id, from_id) > 0)
+        const std::string key_name(args[keys_start + i]);        // stream key
+        const std::string_view from_id_sv = args[ids_start + i]; // starting (exclusive) ID
+
+        // find stream
+        auto map_it = kv_store.find(key_name);
+        if (map_it == kv_store.end())
         {
-            matched.push_back(&entry);
+            continue; // no data for this stream; skip
+        }
+        auto *stream_value = dynamic_cast<StreamValue *>(map_it->second.get());
+
+        const XId from_id = *parse_xid_simple(from_id_sv, /*is_start=*/true);
+
+        std::vector<const StreamEntry *> matches;
+        matches.reserve(stream_value->entries.size());
+        for (const auto &entry : stream_value->entries)
+        {
+            const XId entry_id = parse_entry_id_simple(entry.id);
+            if (cmp_xid(entry_id, from_id) > 0)
+            {
+                matches.push_back(&entry);
+            }
+        }
+
+        if (!matches.empty())
+        {
+            result.push_back(StreamChunk{key_name, std::move(matches)});
         }
     }
 
-    if (matched.empty())
+    // If nothing matched across all streams, return NIL
+    if (result.empty())
     {
         send_response(client_fd, RESP_NIL);
         return;
     }
 
+    // Build RESP:
+    // *<num_streams>
+    //   *2
+    //     $<len> <key>
+    //     *<num_entries>
+    //       *2
+    //         $<len> <entry-id>
+    //         *<2*k> <field/value ...>
     std::string response;
-    response += "*1\r\n";
-    response += "*2\r\n";
+    response += "*" + std::to_string(result.size()) + "\r\n";
 
-    // key
-    response += "$" + std::to_string(key_name.size()) + "\r\n" + key_name + "\r\n";
-
-    // entries array
-    response += "*" + std::to_string(matched.size()) + "\r\n";
-    for (const auto *entry : matched)
+    for (const auto &chunk : result)
     {
-        response += "*2\r\n"; // [ id, [field1, value1, ...] ]
+        response += "*2\r\n";
 
-        // id
-        response += "$" + std::to_string(entry->id.size()) + "\r\n" + entry->id + "\r\n";
+        // key
+        response += "$" + std::to_string(chunk.key.size()) + "\r\n" + chunk.key + "\r\n";
 
-        // flat field/value array
-        const size_t flat_count = entry->fields.size() * 2;
-        response += "*" + std::to_string(flat_count) + "\r\n";
-        for (const auto &field : entry->fields)
+        // entries array
+        response += "*" + std::to_string(chunk.entries.size()) + "\r\n";
+        for (const auto *entry : chunk.entries)
         {
-            response += "$" + std::to_string(field.first.size()) + "\r\n" + field.first + "\r\n";
-            response += "$" + std::to_string(field.second.size()) + "\r\n" + field.second + "\r\n";
+            response += "*2\r\n";
+
+            // id
+            response += "$" + std::to_string(entry->id.size()) + "\r\n" + entry->id + "\r\n";
+
+            // field/value flat array
+            const size_t fv_count = entry->fields.size() * 2;
+            response += "*" + std::to_string(fv_count) + "\r\n";
+            for (const auto &field : entry->fields)
+            {
+                response += "$" + std::to_string(field.first.size()) + "\r\n" + field.first + "\r\n";
+                response += "$" + std::to_string(field.second.size()) + "\r\n" + field.second + "\r\n";
+            }
         }
     }
 
