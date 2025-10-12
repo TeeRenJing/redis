@@ -9,6 +9,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cstring>
+#include <optional>
 
 // ============================
 // SEND HELPER
@@ -574,27 +575,36 @@ struct XId
     uint64_t seq;
 };
 
-static bool parse_xid_simple(std::string_view sv, bool is_start, XId &out)
+static std::optional<XId> parse_xid_simple(std::string_view sv, bool is_start)
 {
+    // Support Redis shorthands: "-" (min) and "+" (max)
+    if (sv == "-")
+    {
+        return XId{0, 0};
+    }
+    if (sv == "+")
+    {
+        return XId{std::numeric_limits<uint64_t>::max(), std::numeric_limits<uint64_t>::max()};
+    }
+
     try
     {
-        auto dash = sv.find('-');
-        if (dash == std::string_view::npos)
+        if (auto dash = sv.find('-'); dash == std::string_view::npos)
         {
-            // only ms
-            out.ms = std::stoull(std::string(sv));
-            out.seq = is_start ? 0ULL : UINT64_MAX;
+            uint64_t ms = std::stoull(std::string(sv));
+            uint64_t seq = is_start ? 0ull : std::numeric_limits<uint64_t>::max();
+            return XId{ms, seq};
         }
         else
         {
-            out.ms = std::stoull(std::string(sv.substr(0, dash)));
-            out.seq = std::stoull(std::string(sv.substr(dash + 1)));
+            uint64_t ms = std::stoull(std::string(sv.substr(0, dash)));
+            uint64_t seq = std::stoull(std::string(sv.substr(dash + 1)));
+            return XId{ms, seq};
         }
-        return true;
     }
     catch (...)
     {
-        return false;
+        return std::nullopt;
     }
 }
 
@@ -617,12 +627,6 @@ static inline XId parse_entry_id_simple(const std::string &id)
 
 void handle_xrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
 {
-    if (parts.size() != 4)
-    {
-        send_response(client_fd, "-ERR wrong number of arguments for 'xrange'\r\n");
-        return;
-    }
-
     const std::string key(parts[1]);
     const auto start_sv = parts[2];
     const auto end_sv = parts[3];
@@ -635,53 +639,33 @@ void handle_xrange(int client_fd, const std::vector<std::string_view> &parts, St
     }
 
     auto *stream = dynamic_cast<StreamValue *>(it->second.get());
-    if (!stream)
-    {
-        send_response(client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
-        return;
-    }
 
-    XId start_id{}, end_id{};
-    if (!parse_xid_simple(start_sv, /*is_start=*/true, start_id) ||
-        !parse_xid_simple(end_sv, /*is_start=*/false, end_id))
-    {
-        send_response(client_fd, "-ERR invalid stream ID\r\n");
-        return;
-    }
-    if (cmp_xid(start_id, end_id) > 0)
-    {
-        send_response(client_fd, RESP_EMPTY_ARRAY);
-        return;
-    }
+    const XId start_id = *parse_xid_simple(start_sv, /*is_start=*/true);
+    const XId end_id = *parse_xid_simple(end_sv, /*is_start=*/false);
 
-    // First pass: count matches
-    size_t count = 0;
-    for (const auto &e : stream->entries)
+    std::vector<const StreamEntry *> matches;
+    matches.reserve(stream->entries.size());
+    for (const auto &entry : stream->entries)
     {
-        XId eid = parse_entry_id_simple(e.id);
+        const XId eid = parse_entry_id_simple(entry.id);
         if (cmp_xid(eid, start_id) < 0)
             continue;
         if (cmp_xid(eid, end_id) > 0)
-            break;
-        ++count;
+            break; // entries are in order
+        matches.push_back(&entry);
     }
 
-    // Build RESP
-    std::string resp = "*" + std::to_string(count) + "\r\n";
-    for (const auto &e : stream->entries)
+    // Build RESP reply: array of [ id, [field1, value1, ...] ]
+    std::string resp;
+    resp += "*" + std::to_string(matches.size()) + "\r\n";
+    for (const auto *entry : matches)
     {
-        XId eid = parse_entry_id_simple(e.id);
-        if (cmp_xid(eid, start_id) < 0)
-            continue;
-        if (cmp_xid(eid, end_id) > 0)
-            break;
+        resp += "*2\r\n";
+        resp += "$" + std::to_string(entry->id.size()) + "\r\n" + entry->id + "\r\n";
 
-        resp += "*2\r\n"; // [id, [fields...]]
-        resp += "$" + std::to_string(e.id.size()) + "\r\n" + e.id + "\r\n";
-
-        const size_t n = e.fields.size() * 2;
+        const size_t n = entry->fields.size() * 2;
         resp += "*" + std::to_string(n) + "\r\n";
-        for (const auto &kv : e.fields)
+        for (const auto &kv : entry->fields)
         {
             resp += "$" + std::to_string(kv.first.size()) + "\r\n" + kv.first + "\r\n";
             resp += "$" + std::to_string(kv.second.size()) + "\r\n" + kv.second + "\r\n";
