@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstring>
 #include <optional>
+#include <iostream>
 
 // ============================
 // SEND HELPER
@@ -625,25 +626,46 @@ void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Sto
 // XREAD STREAMS <k1> <k2> ... <id1> <id2> ...
 void handle_xread(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    // parse BLOCK (optional) and STREAMS (assume well-formed for brevity)
+    // XREAD [BLOCK <ms>] STREAMS <k1> <k2> ... <id1> <id2> ...
     size_t i = 1;
     bool has_block = false;
     Millis block_ms{0};
 
-    if (i + 1 < args.size() && (args[i] == "BLOCK"))
+    // Optional: BLOCK <ms>
+    if (i + 1 < args.size() && (args[i] == "BLOCK" || args[i] == "block"))
     {
         has_block = true;
         block_ms = Millis(std::stoll(std::string(args[i + 1])));
         i += 2;
     }
 
-    // expect "STREAMS"
-    // i++; // skip "STREAMS" (advance appropriately in your parser)
+    // Require STREAMS
+    if (i >= args.size() || !(args[i] == "STREAMS" || args[i] == "streams"))
+    {
+        send_response(client_fd, "-ERR XREAD syntax\r\n");
+        return;
+    }
+    ++i;
 
-    const size_t items_after_streams = args.size() - i;
-    const size_t num_keys = items_after_streams / 2;
+    // Split tail into <keys>... and <ids>...
+    if (i >= args.size())
+    {
+        send_response(client_fd, "-ERR XREAD syntax\r\n");
+        return;
+    }
+
+    const size_t tail = args.size() - i;
+    if (tail < 2 || (tail % 2) != 0)
+    { // must be even and at least one key/id pair
+        send_response(client_fd, "-ERR XREAD syntax\r\n");
+        return;
+    }
+
+    const size_t num_keys = tail / 2;
     const size_t keys_start = i;
     const size_t ids_start = i + num_keys;
+
+    std::cout << "XREAD: num_keys=" << num_keys << ", keys_start=" << keys_start << ", ids_start=" << ids_start << std::endl;
 
     std::vector<std::pair<Key, XId>> wait_spec;
     wait_spec.reserve(num_keys);
@@ -658,9 +680,8 @@ void handle_xread(int client_fd, const std::vector<std::string_view> &args, Stor
         auto it = kv_store.find(key);
         auto *sv = (it != kv_store.end()) ? dynamic_cast<StreamValue *>(it->second.get()) : nullptr;
 
-        // parse from-id (exclusive). Reuse your parse_xid_simple from earlier.
         auto from_opt = parse_xid_simple(args[ids_start + k], /*is_start=*/true);
-        const auto from = *from_opt; // happy path (keep your checks if needed)
+        const auto from = *from_opt;
         wait_spec.push_back({key, XId{from.ms, from.seq}});
 
         std::vector<const StreamEntry *> matches;

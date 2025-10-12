@@ -261,11 +261,6 @@ private:
       // Build a view over the complete frame [pos, end_pos)
       std::string_view frame(client.buffer.data() + pos, end_pos - pos);
 
-      // (Optional) very simple log
-      std::cout << "Received raw request: "
-                << std::string(frame).substr(0, 256) << (frame.size() > 256 ? "..." : "")
-                << std::endl;
-
       execute_command(client, frame); // your existing executor
 
       pos = end_pos; // advance to next frame
@@ -398,8 +393,6 @@ private:
                              [](char c)
                              { return c == '\n' || c == '\r'; }),
               cmd.end());
-
-    std::cout << "Received command: " << cmd << std::endl;
 
     // Handle blocking commands specially
     if (cmd == CMD_BLPOP)
