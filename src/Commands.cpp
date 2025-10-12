@@ -569,62 +569,6 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store
 // ============================
 // XRANGE <key> <start> <end>
 // Returns an array of entries: [ id, [field1, value1, ...] ]
-struct XId
-{
-    uint64_t ms;
-    uint64_t seq;
-};
-
-static std::optional<XId> parse_xid_simple(std::string_view sv, bool is_start)
-{
-    // Support Redis shorthands: "-" (min) and "+" (max)
-    if (sv == "-")
-    {
-        return XId{0, 0};
-    }
-    if (sv == "+")
-    {
-        return XId{std::numeric_limits<uint64_t>::max(), std::numeric_limits<uint64_t>::max()};
-    }
-
-    try
-    {
-        if (auto dash = sv.find('-'); dash == std::string_view::npos)
-        {
-            uint64_t ms = std::stoull(std::string(sv));
-            uint64_t seq = is_start ? 0ull : std::numeric_limits<uint64_t>::max();
-            return XId{ms, seq};
-        }
-        else
-        {
-            uint64_t ms = std::stoull(std::string(sv.substr(0, dash)));
-            uint64_t seq = std::stoull(std::string(sv.substr(dash + 1)));
-            return XId{ms, seq};
-        }
-    }
-    catch (...)
-    {
-        return std::nullopt;
-    }
-}
-
-static inline int cmp_xid(const XId &a, const XId &b)
-{
-    if (a.ms != b.ms)
-        return (a.ms < b.ms) ? -1 : 1;
-    if (a.seq != b.seq)
-        return (a.seq < b.seq) ? -1 : 1;
-    return 0;
-}
-
-static inline XId parse_entry_id_simple(const std::string &id)
-{
-    auto dash = id.find('-');
-    // Assumes well-formed ids inside the stream
-    return XId{std::stoull(id.substr(0, dash)),
-               std::stoull(id.substr(dash + 1))};
-}
-
 void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
     const std::string key(args[1]);
@@ -681,97 +625,91 @@ void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Sto
 // XREAD STREAMS <k1> <k2> ... <id1> <id2> ...
 void handle_xread(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
+    // parse BLOCK (optional) and STREAMS (assume well-formed for brevity)
+    size_t i = 1;
+    bool has_block = false;
+    Millis block_ms{0};
 
-    const size_t items_after_streams = args.size() - 2;
+    if (i + 1 < args.size() && (args[i] == "BLOCK"))
+    {
+        has_block = true;
+        block_ms = Millis(std::stoll(std::string(args[i + 1])));
+        i += 2;
+    }
+
+    // expect "STREAMS"
+    // i++; // skip "STREAMS" (advance appropriately in your parser)
+
+    const size_t items_after_streams = args.size() - i;
     const size_t num_keys = items_after_streams / 2;
-    const size_t keys_start = 2;
-    const size_t ids_start = keys_start + num_keys;
+    const size_t keys_start = i;
+    const size_t ids_start = i + num_keys;
 
-    // We’ll accumulate only streams that have matches
-    struct StreamChunk
+    std::vector<std::pair<Key, XId>> wait_spec;
+    wait_spec.reserve(num_keys);
+
+    // immediate results container: vector of {key, entries*}
+    std::vector<std::pair<std::string, std::vector<const StreamEntry *>>> chunks;
+    chunks.reserve(num_keys);
+
+    for (size_t k = 0; k < num_keys; ++k)
     {
-        const std::string key; // copy the key so we can use its size
-        std::vector<const StreamEntry *> entries;
-    };
-    std::vector<StreamChunk> result;
-    result.reserve(num_keys);
+        std::string key(args[keys_start + k]);
+        auto it = kv_store.find(key);
+        auto *sv = (it != kv_store.end()) ? dynamic_cast<StreamValue *>(it->second.get()) : nullptr;
 
-    for (size_t i = 0; i < num_keys; ++i)
-    {
-        const std::string key_name(args[keys_start + i]);        // stream key
-        const std::string_view from_id_sv = args[ids_start + i]; // starting (exclusive) ID
-
-        // find stream
-        auto map_it = kv_store.find(key_name);
-        if (map_it == kv_store.end())
-        {
-            continue; // no data for this stream; skip
-        }
-        auto *stream_value = dynamic_cast<StreamValue *>(map_it->second.get());
-
-        const XId from_id = *parse_xid_simple(from_id_sv, /*is_start=*/true);
+        // parse from-id (exclusive). Reuse your parse_xid_simple from earlier.
+        auto from_opt = parse_xid_simple(args[ids_start + k], /*is_start=*/true);
+        const auto from = *from_opt; // happy path (keep your checks if needed)
+        wait_spec.push_back({key, XId{from.ms, from.seq}});
 
         std::vector<const StreamEntry *> matches;
-        matches.reserve(stream_value->entries.size());
-        for (const auto &entry : stream_value->entries)
+        if (sv)
         {
-            const XId entry_id = parse_entry_id_simple(entry.id);
-            if (cmp_xid(entry_id, from_id) > 0)
+            for (const auto &e : sv->entries)
             {
-                matches.push_back(&entry);
+                auto eid = parse_entry_id_simple(e.id);
+                if (cmp_xid({eid.ms, eid.seq}, {from.ms, from.seq}) > 0)
+                    matches.push_back(&e);
             }
         }
-
         if (!matches.empty())
         {
-            result.push_back(StreamChunk{key_name, std::move(matches)});
+            chunks.push_back({key, std::move(matches)});
         }
     }
 
-    // If nothing matched across all streams, return NIL
-    if (result.empty())
+    if (!chunks.empty())
     {
-        send_response(client_fd, RESP_NIL);
+        std::string resp; // build multi-stream XREAD reply here (like in unblock)
+        resp += "*" + std::to_string(chunks.size()) + "\r\n";
+        for (auto &[key, entries] : chunks)
+        {
+            resp += "*2\r\n";
+            resp += "$" + std::to_string(key.size()) + "\r\n" + key + "\r\n";
+            resp += "*" + std::to_string(entries.size()) + "\r\n";
+            for (const auto *e : entries)
+            {
+                resp += "*2\r\n";
+                resp += "$" + std::to_string(e->id.size()) + "\r\n" + e->id + "\r\n";
+                const size_t flat = e->fields.size() * 2;
+                resp += "*" + std::to_string(flat) + "\r\n";
+                for (const auto &kv : e->fields)
+                {
+                    resp += "$" + std::to_string(kv.first.size()) + "\r\n" + kv.first + "\r\n";
+                    resp += "$" + std::to_string(kv.second.size()) + "\r\n" + kv.second + "\r\n";
+                }
+            }
+        }
+        send_response(client_fd, resp);
         return;
     }
 
-    // Build RESP:
-    // *<num_streams>
-    //   *2
-    //     $<len> <key>
-    //     *<num_entries>
-    //       *2
-    //         $<len> <entry-id>
-    //         *<2*k> <field/value ...>
-    std::string response;
-    response += "*" + std::to_string(result.size()) + "\r\n";
-
-    for (const auto &chunk : result)
+    if (has_block)
     {
-        response += "*2\r\n";
-
-        // key
-        response += "$" + std::to_string(chunk.key.size()) + "\r\n" + chunk.key + "\r\n";
-
-        // entries array
-        response += "*" + std::to_string(chunk.entries.size()) + "\r\n";
-        for (const auto *entry : chunk.entries)
-        {
-            response += "*2\r\n";
-
-            // id
-            response += "$" + std::to_string(entry->id.size()) + "\r\n" + entry->id + "\r\n";
-
-            // field/value flat array
-            const size_t fv_count = entry->fields.size() * 2;
-            response += "*" + std::to_string(fv_count) + "\r\n";
-            for (const auto &field : entry->fields)
-            {
-                response += "$" + std::to_string(field.first.size()) + "\r\n" + field.first + "\r\n";
-                response += "$" + std::to_string(field.second.size()) + "\r\n" + field.second + "\r\n";
-            }
-        }
+        g_blocking_manager.add_blocked_xread_client(client_fd, wait_spec, block_ms);
+        return; // manager will reply later (or timeout with *-1)
     }
 
-    send_response(client_fd, response);
+    send_response(client_fd, RESP_EMPTY_ARRAY); // *0\r\n
 }

@@ -25,8 +25,7 @@ void BlockingManager::add_blocked_client(
         std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
     std::cout << "[DEBUG] Timeout passed (ms): " << timeout_ms.count() << std::endl;
 
-    // Concept: Handling zero/negative timeout as indefinite wait
-    if (timeout_ms.count() <= 0)
+    if (timeout_ms.count() == 0)
     {
         std::cout << "[DEBUG] Timeout <= 0, using indefinite block" << std::endl;
         add_indefinitely_blocked_client(client_fd, keys);
@@ -63,9 +62,6 @@ void BlockingManager::check_timeouts(
     std::function<void(int, const std::string &)> send_callback)
 {
     const auto now = std::chrono::steady_clock::now();
-    const long long now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 now.time_since_epoch())
-                                 .count();
 
     std::vector<int> timed_out_clients;
 
@@ -81,9 +77,6 @@ void BlockingManager::check_timeouts(
         }
 
         const auto timeout_time = client_ptr->block_start + client_ptr->timeout;
-        const long long timeout_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                         timeout_time.time_since_epoch())
-                                         .count();
 
         if (now >= timeout_time)
         {
@@ -242,4 +235,136 @@ size_t BlockingManager::get_blocked_client_count() const
 size_t BlockingManager::get_blocked_keys_count() const
 {
     return blocked_clients_.size();
+}
+
+void BlockingManager::add_blocked_xread_client(
+    FileDescriptor client_fd,
+    const std::vector<std::pair<Key, XId>> &key_from_pairs,
+    Millis timeout)
+{
+    auto bc = std::make_unique<BlockedClient>(client_fd, std::vector<Key>{}, timeout);
+    bc->kind = BlockedClient::Kind::StreamRead;
+    bc->is_indefinite = (timeout.count() == 0) || (timeout.count() >= 315360000000LL); // same heuristic
+
+    bc->keys.reserve(key_from_pairs.size());
+    for (const auto &[k, from] : key_from_pairs)
+    {
+        bc->keys.push_back(k);
+        bc->from_ids[k] = from;
+        stream_blocked_clients_[k].push(client_fd);
+    }
+
+    client_info_[client_fd] = std::move(bc);
+}
+
+static std::string build_xread_single_stream_response(
+    const Key &stream_key,
+    const std::vector<const StreamEntry *> &ready_entries)
+{
+    std::string response;
+    response += "*1\r\n"; // one stream
+    response += "*2\r\n";
+    response += "$" + std::to_string(stream_key.size()) + "\r\n" + stream_key + "\r\n";
+    response += "*" + std::to_string(ready_entries.size()) + "\r\n";
+
+    for (const auto *entry : ready_entries)
+    {
+        response += "*2\r\n";
+        response += "$" + std::to_string(entry->id.size()) + "\r\n" + entry->id + "\r\n";
+
+        const size_t flattened_fields = entry->fields.size() * 2;
+        response += "*" + std::to_string(flattened_fields) + "\r\n";
+
+        for (const auto &field_pair : entry->fields)
+        {
+            const auto &field_name = field_pair.first;
+            const auto &field_value = field_pair.second;
+
+            response += "$" + std::to_string(field_name.size()) + "\r\n" + field_name + "\r\n";
+            response += "$" + std::to_string(field_value.size()) + "\r\n" + field_value + "\r\n";
+        }
+    }
+    return response;
+}
+
+bool BlockingManager::try_unblock_stream_clients_for_key(
+    const Key &stream_key, Store &kv_store, SendCallback send_callback)
+{
+    // Find waiters queue for this stream
+    auto waiters_it = stream_blocked_clients_.find(stream_key);
+    if (waiters_it == stream_blocked_clients_.end() || waiters_it->second.empty())
+        return false;
+
+    // Locate the stream value in the store
+    auto store_it = kv_store.find(stream_key);
+    if (store_it == kv_store.end())
+        return false;
+
+    auto *stream_value = dynamic_cast<StreamValue *>(store_it->second.get());
+    if (!stream_value)
+        return false;
+
+    bool unblocked_someone = false;
+
+    // Process waiters in FIFO order
+    while (!waiters_it->second.empty())
+    {
+        FileDescriptor waiter_fd = waiters_it->second.front();
+
+        // Ensure the client record still exists
+        auto client_it = client_info_.find(waiter_fd);
+        if (client_it == client_info_.end())
+        {
+            waiters_it->second.pop();
+            continue;
+        }
+
+        auto &blocked = *client_it->second;
+        if (blocked.kind != BlockedClient::Kind::StreamRead)
+        {
+            waiters_it->second.pop();
+            continue;
+        }
+
+        // Find this client's from-id for this stream
+        auto from_it = blocked.from_ids.find(stream_key);
+        if (from_it == blocked.from_ids.end())
+        {
+            waiters_it->second.pop();
+            continue;
+        }
+
+        const auto from_id = from_it->second; // exclusive lower bound
+
+        // Collect entries with id > from_id
+        std::vector<const StreamEntry *> ready_entries;
+        ready_entries.reserve(stream_value->entries.size());
+
+        for (const auto &entry : stream_value->entries)
+        {
+            const auto parsed_id = parse_entry_id_simple(entry.id);
+            if (cmp_xid({parsed_id.ms, parsed_id.seq}, {from_id.ms, from_id.seq}) > 0)
+            {
+                ready_entries.push_back(&entry);
+            }
+        }
+
+        if (ready_entries.empty())
+            break;
+
+        // Build and queue the reply to that waiter
+        std::string response = build_xread_single_stream_response(stream_key, ready_entries);
+        send_callback(waiter_fd, response);
+
+        // Remove the waiter from all bookkeeping
+        waiters_it->second.pop();
+        remove_blocked_client(waiter_fd);
+
+        unblocked_someone = true;
+    }
+
+    if (waiters_it->second.empty())
+        stream_blocked_clients_.erase(waiters_it);
+
+    return unblocked_someone;
 }

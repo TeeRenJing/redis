@@ -20,9 +20,9 @@
 
 struct ClientState
 {
-  int fd;
-  std::string buffer;
-  std::queue<std::string> pending_responses;
+  int fd{};
+  std::string buffer{};
+  std::queue<std::string> pending_responses{};
 };
 
 class Server
@@ -193,8 +193,8 @@ private:
 
   bool handle_client_data(ClientState &client)
   {
-    std::array<char, 1024> buffer;
-    ssize_t bytes_received = recv(client.fd, buffer.data(), buffer.size(), 0);
+    std::array<char, 4096> scratch_buffer{};
+    ssize_t bytes_received = recv(client.fd, scratch_buffer.data(), scratch_buffer.size(), 0);
 
     if (bytes_received <= 0)
     {
@@ -206,7 +206,7 @@ private:
       return true; // No data available, but connection is still alive
     }
 
-    client.buffer.append(buffer.data(), bytes_received);
+    client.buffer.append(scratch_buffer.data(), bytes_received);
 
     // Process complete commands in buffer
     return process_client_buffer(client);
@@ -251,37 +251,32 @@ private:
   bool process_client_buffer(ClientState &client)
   {
     size_t pos = 0;
-    while (pos < client.buffer.size())
+
+    while (true)
     {
-      // Find complete command (look for complete RESP message or simple \r\n)
       size_t end_pos = find_complete_command(client.buffer, pos);
       if (end_pos == std::string::npos)
-        break; // No complete command yet
+        break; // need more bytes
 
-      std::string_view request(client.buffer.data() + pos, end_pos - pos);
+      // Build a view over the complete frame [pos, end_pos)
+      std::string_view frame(client.buffer.data() + pos, end_pos - pos);
 
-      // Log request
-      std::string log_request;
-      log_request.reserve(request.size());
-      for (char c : request)
-      {
-        if (c == '\r')
-          log_request += "\\r";
-        else if (c == '\n')
-          log_request += "\\n";
-        else
-          log_request += c;
-      }
-      std::cout << "Received raw request: " << log_request << std::endl;
+      // (Optional) very simple log
+      std::cout << "Received raw request: "
+                << std::string(frame).substr(0, 256) << (frame.size() > 256 ? "..." : "")
+                << std::endl;
 
-      // Parse and execute command
-      execute_command(client, request);
+      execute_command(client, frame); // your existing executor
 
-      pos = end_pos;
+      pos = end_pos; // advance to next frame
+      if (pos >= client.buffer.size())
+        break;
     }
 
-    // Remove processed data from buffer
-    client.buffer.erase(0, pos);
+    // Drop consumed bytes in one go
+    if (pos > 0)
+      client.buffer.erase(0, pos);
+
     return true;
   }
   size_t find_complete_command(const std::string &buffer, size_t start_pos)
@@ -422,37 +417,33 @@ private:
     {
       handle_lpush(client.fd, parts, kv_store_);
       // After LPUSH, try to unblock waiting clients
-      if (parts.size() >= 2)
+
+      std::string key(parts[1]);
+      auto send_callback = [this](int client_fd, const std::string &response)
       {
-        std::string key(parts[1]);
-        auto send_callback = [this](int client_fd, const std::string &response)
+        auto it = clients_.find(client_fd);
+        if (it != clients_.end())
         {
-          auto it = clients_.find(client_fd);
-          if (it != clients_.end())
-          {
-            it->second.pending_responses.push(response);
-          }
-        };
-        g_blocking_manager.try_unblock_clients_for_key(key, kv_store_, send_callback);
-      }
+          it->second.pending_responses.push(response);
+        }
+      };
+      g_blocking_manager.try_unblock_clients_for_key(key, kv_store_, send_callback);
     }
     else if (cmd == CMD_RPUSH)
     {
       handle_rpush(client.fd, parts, kv_store_);
       // After RPUSH, try to unblock waiting clients
-      if (parts.size() >= 2)
+
+      std::string key(parts[1]);
+      auto send_callback = [this](int client_fd, const std::string &response)
       {
-        std::string key(parts[1]);
-        auto send_callback = [this](int client_fd, const std::string &response)
+        auto it = clients_.find(client_fd);
+        if (it != clients_.end())
         {
-          auto it = clients_.find(client_fd);
-          if (it != clients_.end())
-          {
-            it->second.pending_responses.push(response);
-          }
-        };
-        g_blocking_manager.try_unblock_clients_for_key(key, kv_store_, send_callback);
-      }
+          it->second.pending_responses.push(response);
+        }
+      };
+      g_blocking_manager.try_unblock_clients_for_key(key, kv_store_, send_callback);
     }
     else if (cmd == CMD_LRANGE)
       handle_lrange(client.fd, parts, kv_store_);
@@ -463,7 +454,19 @@ private:
     else if (cmd == CMD_TYPE)
       handle_type(client.fd, parts, kv_store_);
     else if (cmd == CMD_XADD)
+    {
       handle_xadd(client.fd, parts, kv_store_);
+      if (parts.size() >= 2)
+      {
+        std::string key(parts[1]);
+        auto send_cb = [this](int cfd, const std::string &resp)
+        {
+          if (auto it = clients_.find(cfd); it != clients_.end())
+            it->second.pending_responses.push(resp);
+        };
+        g_blocking_manager.try_unblock_stream_clients_for_key(key, kv_store_, send_cb);
+      }
+    }
     else if (cmd == CMD_XRANGE)
       handle_xrange(client.fd, parts, kv_store_);
     else if (cmd == CMD_XREAD)
@@ -540,7 +543,7 @@ private:
   Store kv_store_;
 };
 
-int main(int argc, char **argv)
+int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv)
 {
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
