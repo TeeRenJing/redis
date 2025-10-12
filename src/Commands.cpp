@@ -665,39 +665,65 @@ void handle_xread(int client_fd, const std::vector<std::string_view> &args, Stor
     const size_t keys_start = i;
     const size_t ids_start = i + num_keys;
 
-    std::cout << "XREAD: num_keys=" << num_keys << ", keys_start=" << keys_start << ", ids_start=" << ids_start << std::endl;
-
     std::vector<std::pair<Key, XId>> wait_spec;
     wait_spec.reserve(num_keys);
 
     // immediate results container: vector of {key, entries*}
-    std::vector<std::pair<std::string, std::vector<const StreamEntry *>>> chunks;
+    std::vector<std::pair<Key, std::vector<const StreamEntry *>>> chunks;
     chunks.reserve(num_keys);
 
-    for (size_t k = 0; k < num_keys; ++k)
+    for (size_t j = 0; j < num_keys; ++j)
     {
-        std::string key(args[keys_start + k]);
-        auto it = kv_store.find(key);
-        auto *sv = (it != kv_store.end()) ? dynamic_cast<StreamValue *>(it->second.get()) : nullptr;
+        Key stream_key(args[keys_start + j]);
+        const std::string_view id_sv = args[ids_start + j];
 
-        auto from_opt = parse_xid_simple(args[ids_start + k], /*is_start=*/true);
-        const auto from = *from_opt;
-        wait_spec.push_back({key, XId{from.ms, from.seq}});
+        // Find stream if present
+        auto store_it = kv_store.find(stream_key);
+        auto *stream_value = (store_it != kv_store.end())
+                                 ? dynamic_cast<StreamValue *>(store_it->second.get())
+                                 : nullptr;
 
-        std::vector<const StreamEntry *> matches;
-        if (sv)
+        // Resolve from-id (exclusive lower bound)
+        XId from_id{0, 0};
+        if (id_sv == "$")
         {
-            for (const auto &e : sv->entries)
+            // Snapshot the current tail; if empty/missing, keep 0-0
+            if (stream_value && !stream_value->entries.empty())
             {
-                auto eid = parse_entry_id_simple(e.id);
-                if (cmp_xid({eid.ms, eid.seq}, {from.ms, from.seq}) > 0)
-                    matches.push_back(&e);
+                const auto &last_id_str = stream_value->entries.back().id;
+                const auto last = parse_entry_id_simple(last_id_str); // {ms, seq}
+                from_id = {last.ms, last.seq};
             }
         }
-        if (!matches.empty())
+        else
         {
-            chunks.push_back({key, std::move(matches)});
+            auto from_opt = parse_xid_simple(id_sv, /*is_start=*/true);
+            if (!from_opt)
+            {
+                send_response(client_fd, "-ERR invalid stream ID\r\n");
+                return;
+            }
+            from_id = *from_opt;
         }
+
+        // Save for BLOCK path
+        wait_spec.emplace_back(stream_key, from_id);
+
+        // Immediate scan: collect entries with id > from_id
+        std::vector<const StreamEntry *> ready_entries;
+        if (stream_value)
+        {
+            ready_entries.reserve(stream_value->entries.size());
+            for (const auto &entry : stream_value->entries)
+            {
+                const auto eid = parse_entry_id_simple(entry.id);
+                if (cmp_xid({eid.ms, eid.seq}, {from_id.ms, from_id.seq}) > 0)
+                    ready_entries.emplace_back(&entry);
+            }
+        }
+
+        if (!ready_entries.empty())
+            chunks.emplace_back(stream_key, std::move(ready_entries));
     }
 
     if (!chunks.empty())
