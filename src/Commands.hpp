@@ -3,7 +3,7 @@
 #include <string_view>
 #include <vector>
 
-constexpr const char *PX_ARG = "px";
+constexpr const char *PX_ARG = "PX";
 
 // RESP Protocol Constants
 constexpr const char *RESP_OK = "+OK\r\n";

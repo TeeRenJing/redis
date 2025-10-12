@@ -66,15 +66,8 @@ void handle_set(int client_fd, const std::vector<std::string_view> &parts, Store
     // Handle optional PX argument
     if (parts.size() >= 5 && parts[3] == PX_ARG)
     {
-        try
-        {
-            auto px = std::stoll(std::string(parts[4]));
-            expiry = std::chrono::steady_clock::now() + std::chrono::milliseconds(px);
-        }
-        catch (...)
-        {
-            // Ignore invalid expiry, treat as no expiry
-        }
+        auto px = std::stoll(std::string(parts[4]));
+        expiry = std::chrono::steady_clock::now() + std::chrono::milliseconds(px);
     }
 
     kv_store[key] = std::make_unique<StringValue>(value, expiry);
@@ -248,15 +241,7 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Stor
 
     if (parts.size() > 2)
     {
-        try
-        {
-            count = std::stoi(std::string(parts[2]));
-        }
-        catch (...)
-        {
-            send_response(client_fd, "-ERR value is not an integer or out of range\r\n");
-            return;
-        }
+        count = std::stoi(std::string(parts[2]));
         if (count < 0)
         {
             send_response(client_fd, "-ERR value is not an integer or out of range\r\n");
@@ -319,16 +304,9 @@ void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, St
 
     const std::string key(parts[1]);
     int start, stop;
-    try
-    {
-        start = std::stoi(std::string(parts[2]));
-        stop = std::stoi(std::string(parts[3]));
-    }
-    catch (...)
-    {
-        send_response(client_fd, "-ERR start or stop is not an integer\r\n");
-        return;
-    }
+
+    start = std::stoi(std::string(parts[2]));
+    stop = std::stoi(std::string(parts[3]));
 
     auto it = kv_store.find(key);
     if (it == kv_store.end())
