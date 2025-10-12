@@ -682,11 +682,10 @@ void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Sto
 void handle_xread(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
 
-    const size_t total = args.size();
-    const size_t num_pairs = (total - 3) / 2; // N keys + N ids
-
+    const size_t items_after_streams = args.size() - 2;
+    const size_t num_keys = items_after_streams / 2;
     const size_t keys_start = 2;
-    const size_t ids_start = 2 + num_pairs;
+    const size_t ids_start = keys_start + num_keys;
 
     // We’ll accumulate only streams that have matches
     struct StreamChunk
@@ -695,9 +694,9 @@ void handle_xread(int client_fd, const std::vector<std::string_view> &args, Stor
         std::vector<const StreamEntry *> entries;
     };
     std::vector<StreamChunk> result;
-    result.reserve(num_pairs);
+    result.reserve(num_keys);
 
-    for (size_t i = 0; i < num_pairs; ++i)
+    for (size_t i = 0; i < num_keys; ++i)
     {
         const std::string key_name(args[keys_start + i]);        // stream key
         const std::string_view from_id_sv = args[ids_start + i]; // starting (exclusive) ID
