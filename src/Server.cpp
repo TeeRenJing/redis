@@ -466,6 +466,8 @@ private:
       handle_xadd(client.fd, parts, kv_store_);
     else if (cmd == CMD_XRANGE)
       handle_xrange(client.fd, parts, kv_store_);
+    else if (cmd == CMD_XREAD)
+      handle_xread(client.fd, parts, kv_store_);
     else
       send(client.fd, RESP_NIL, strlen(RESP_NIL), 0);
   }

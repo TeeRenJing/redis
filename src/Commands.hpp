@@ -29,6 +29,7 @@ constexpr const char *CMD_LPOP = "LPOP";
 constexpr const char *CMD_TYPE = "TYPE";
 constexpr const char *CMD_XADD = "XADD";
 constexpr const char *CMD_XRANGE = "XRANGE";
+constexpr const char *CMD_XREAD = "XREAD";
 
 // Command Handlers
 void handle_ping(int client_fd);
@@ -43,3 +44,4 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Stor
 void handle_type(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_xrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
+void handle_xread(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);

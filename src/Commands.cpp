@@ -36,15 +36,15 @@ void handle_ping(int client_fd)
 // ============================
 // ECHO
 // ============================
-void handle_echo(int client_fd, const std::vector<std::string_view> &parts)
+void handle_echo(int client_fd, const std::vector<std::string_view> &args)
 {
-    if (parts.size() < 2)
+    if (args.size() < 2)
     {
         send_response(client_fd, RESP_NIL);
         return;
     }
 
-    const auto &val = parts[1];
+    const auto &val = args[1];
     std::string resp = "$" + std::to_string(val.size()) + "\r\n" + std::string(val) + "\r\n";
     send_response(client_fd, resp);
 }
@@ -52,22 +52,22 @@ void handle_echo(int client_fd, const std::vector<std::string_view> &parts)
 // ============================
 // SET
 // ============================
-void handle_set(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+void handle_set(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    if (parts.size() < 3)
+    if (args.size() < 3)
     {
         send_response(client_fd, RESP_NIL);
         return;
     }
 
-    const auto key = std::string(parts[1]);
-    const auto value = std::string(parts[2]);
+    const auto key = std::string(args[1]);
+    const auto value = std::string(args[2]);
     auto expiry = std::chrono::steady_clock::time_point::max();
 
     // Handle optional PX argument
-    if (parts.size() >= 5 && parts[3] == PX_ARG)
+    if (args.size() >= 5 && args[3] == PX_ARG)
     {
-        auto px = std::stoll(std::string(parts[4]));
+        auto px = std::stoll(std::string(args[4]));
         expiry = std::chrono::steady_clock::now() + std::chrono::milliseconds(px);
     }
 
@@ -78,15 +78,15 @@ void handle_set(int client_fd, const std::vector<std::string_view> &parts, Store
 // ============================
 // GET
 // ============================
-void handle_get(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+void handle_get(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    if (parts.size() < 2)
+    if (args.size() < 2)
     {
         send_response(client_fd, RESP_NIL);
         return;
     }
 
-    const auto key = std::string(parts[1]);
+    const auto key = std::string(args[1]);
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
@@ -114,15 +114,15 @@ void handle_get(int client_fd, const std::vector<std::string_view> &parts, Store
 // ============================
 // LPUSH
 // ============================
-void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+void handle_lpush(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    if (parts.size() < 3)
+    if (args.size() < 3)
     {
         send_response(client_fd, RESP_NIL);
         return;
     }
 
-    const std::string key(parts[1]);
+    const std::string key(args[1]);
     ListValue *list_ptr = nullptr;
 
     if (auto it = kv_store.find(key); it != kv_store.end())
@@ -142,9 +142,9 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Sto
     }
 
     // Push left (front) in order
-    for (size_t i = 2; i < parts.size(); ++i)
+    for (size_t i = 2; i < args.size(); ++i)
     {
-        list_ptr->values.insert(list_ptr->values.begin(), std::string(parts[i]));
+        list_ptr->values.insert(list_ptr->values.begin(), std::string(args[i]));
     }
 
     std::string resp = ":" + std::to_string(list_ptr->values.size()) + "\r\n";
@@ -159,15 +159,15 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Sto
 // ============================
 // RPUSH
 // ============================
-void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+void handle_rpush(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    if (parts.size() < 3)
+    if (args.size() < 3)
     {
         send_response(client_fd, RESP_NIL);
         return;
     }
 
-    const std::string key(parts[1]);
+    const std::string key(args[1]);
     ListValue *list_ptr = nullptr;
 
     if (auto it = kv_store.find(key); it != kv_store.end())
@@ -186,8 +186,8 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
         kv_store[key] = std::move(list);
     }
 
-    for (size_t i = 2; i < parts.size(); ++i)
-        list_ptr->values.push_back(std::string(parts[i]));
+    for (size_t i = 2; i < args.size(); ++i)
+        list_ptr->values.push_back(std::string(args[i]));
 
     std::string resp = ":" + std::to_string(list_ptr->values.size()) + "\r\n";
     send_response(client_fd, resp);
@@ -200,15 +200,15 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
 // ============================
 // LLEN
 // ============================
-void handle_llen(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+void handle_llen(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    if (parts.size() < 2)
+    if (args.size() < 2)
     {
         send_response(client_fd, RESP_NIL);
         return;
     }
 
-    const auto key = std::string(parts[1]);
+    const auto key = std::string(args[1]);
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
@@ -229,20 +229,20 @@ void handle_llen(int client_fd, const std::vector<std::string_view> &parts, Stor
 // ============================
 // LPOP
 // ============================
-void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+void handle_lpop(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    if (parts.size() < 2)
+    if (args.size() < 2)
     {
         send_response(client_fd, RESP_NIL);
         return;
     }
 
-    const std::string key(parts[1]);
+    const std::string key(args[1]);
     int count = 1;
 
-    if (parts.size() > 2)
+    if (args.size() > 2)
     {
-        count = std::stoi(std::string(parts[2]));
+        count = std::stoi(std::string(args[2]));
         if (count < 0)
         {
             send_response(client_fd, "-ERR value is not an integer or out of range\r\n");
@@ -253,7 +253,7 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Stor
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
-        send_response(client_fd, (parts.size() > 2) ? RESP_EMPTY_ARRAY : RESP_NIL);
+        send_response(client_fd, (args.size() > 2) ? RESP_EMPTY_ARRAY : RESP_NIL);
         return;
     }
 
@@ -265,14 +265,14 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Stor
     }
     if (list_val->values.empty())
     {
-        send_response(client_fd, (parts.size() > 2) ? RESP_EMPTY_ARRAY : RESP_NIL);
+        send_response(client_fd, (args.size() > 2) ? RESP_EMPTY_ARRAY : RESP_NIL);
         return;
     }
 
     size_t elements_to_pop = std::min(static_cast<size_t>(count), list_val->values.size());
     std::string resp;
 
-    if (parts.size() <= 2)
+    if (args.size() <= 2)
     {
         resp = "$" + std::to_string(list_val->values.front().size()) + "\r\n" + list_val->values.front() + "\r\n";
         list_val->values.erase(list_val->values.begin());
@@ -295,19 +295,19 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Stor
 // LRANGE <key> <start> <stop>
 // Returns a RESP array of elements in the specified range.
 // Negative indices are supported (e.g., -1 is the last element).
-void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+void handle_lrange(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    if (parts.size() != 4)
+    if (args.size() != 4)
     {
         send_response(client_fd, RESP_ERR_GENERIC);
         return;
     }
 
-    const std::string key(parts[1]);
+    const std::string key(args[1]);
     int start, stop;
 
-    start = std::stoi(std::string(parts[2]));
-    stop = std::stoi(std::string(parts[3]));
+    start = std::stoi(std::string(args[2]));
+    stop = std::stoi(std::string(args[3]));
 
     auto it = kv_store.find(key);
     if (it == kv_store.end())
@@ -352,15 +352,15 @@ void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, St
 // ============================
 // TYPE
 // ============================
-void handle_type(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+void handle_type(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    if (parts.size() < 2)
+    if (args.size() < 2)
     {
         send_response(client_fd, "+none\r\n");
         return;
     }
 
-    const auto key = std::string(parts[1]);
+    const auto key = std::string(args[1]);
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
@@ -384,16 +384,16 @@ void handle_type(int client_fd, const std::vector<std::string_view> &parts, Stor
 // ============================
 // XADD
 // ============================
-void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    if (parts.size() < 5 || ((parts.size() - 3) % 2 != 0))
+    if (args.size() < 5 || ((args.size() - 3) % 2 != 0))
     {
         send_response(client_fd, "-ERR wrong number of arguments for 'xadd' command\r\n");
         return;
     }
 
-    const std::string key(parts[1]);
-    const std::string_view id_sv = parts[2];
+    const std::string key(args[1]);
+    const std::string_view id_sv = args[2];
 
     // Check if full auto-generation is requested
     bool full_auto = (id_sv == "*");
@@ -553,10 +553,10 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Stor
 
     StreamEntry entry;
     entry.id = final_id;
-    entry.fields.reserve((parts.size() - 3) / 2);
+    entry.fields.reserve((args.size() - 3) / 2);
 
-    for (size_t i = 3; i + 1 < parts.size(); i += 2)
-        entry.fields.emplace(std::string(parts[i]), std::string(parts[i + 1]));
+    for (size_t i = 3; i + 1 < args.size(); i += 2)
+        entry.fields.emplace(std::string(args[i]), std::string(args[i + 1]));
 
     stream->entries.push_back(std::move(entry));
 
@@ -625,11 +625,11 @@ static inline XId parse_entry_id_simple(const std::string &id)
                std::stoull(id.substr(dash + 1))};
 }
 
-void handle_xrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
 {
-    const std::string key(parts[1]);
-    const auto start_sv = parts[2];
-    const auto end_sv = parts[3];
+    const std::string key(args[1]);
+    const auto start_sv = args[2];
+    const auto end_sv = args[3];
 
     auto it = kv_store.find(key);
     if (it == kv_store.end())
@@ -673,4 +673,70 @@ void handle_xrange(int client_fd, const std::vector<std::string_view> &parts, St
     }
 
     send_response(client_fd, resp);
+}
+
+// ============================
+// XREAD (simple, exclusive)
+// ============================
+// XREAD STREAMS <key> <id>
+// Returns: array of streams -> [ [ key, [ [id, [f1,v1,...]], ... ] ] ]
+void handle_xread(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+{
+    const std::string key_name(args[2]);
+    const std::string_view from_id_sv = args[3];
+
+    auto store_it = kv_store.find(key_name);
+    if (store_it == kv_store.end())
+    {
+        send_response(client_fd, RESP_NIL);
+        return;
+    }
+
+    auto *stream_value = dynamic_cast<StreamValue *>(store_it->second.get());
+    const XId from_id = *parse_xid_simple(from_id_sv, /*is_start=*/true);
+
+    std::vector<const StreamEntry *> matched;
+    matched.reserve(stream_value->entries.size());
+    for (const auto &entry : stream_value->entries)
+    {
+        const XId entry_id = parse_entry_id_simple(entry.id);
+        if (cmp_xid(entry_id, from_id) > 0)
+        {
+            matched.push_back(&entry);
+        }
+    }
+
+    if (matched.empty())
+    {
+        send_response(client_fd, RESP_NIL);
+        return;
+    }
+
+    std::string response;
+    response += "*1\r\n";
+    response += "*2\r\n";
+
+    // key
+    response += "$" + std::to_string(key_name.size()) + "\r\n" + key_name + "\r\n";
+
+    // entries array
+    response += "*" + std::to_string(matched.size()) + "\r\n";
+    for (const auto *entry : matched)
+    {
+        response += "*2\r\n"; // [ id, [field1, value1, ...] ]
+
+        // id
+        response += "$" + std::to_string(entry->id.size()) + "\r\n" + entry->id + "\r\n";
+
+        // flat field/value array
+        const size_t flat_count = entry->fields.size() * 2;
+        response += "*" + std::to_string(flat_count) + "\r\n";
+        for (const auto &field : entry->fields)
+        {
+            response += "$" + std::to_string(field.first.size()) + "\r\n" + field.first + "\r\n";
+            response += "$" + std::to_string(field.second.size()) + "\r\n" + field.second + "\r\n";
+        }
+    }
+
+    send_response(client_fd, response);
 }
