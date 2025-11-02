@@ -5,10 +5,6 @@
 #include <iostream>
 #include <algorithm>
 
-// Global instance of BlockingManager (Singleton-like behavior for simplicity)
-// Good Practice: Avoid true singletons where possible, but for simplicity, this acts as one.
-BlockingManager g_blocking_manager;
-
 void BlockingManager::add_blocked_client(
     int client_fd,
     const std::vector<std::string> &keys,

@@ -137,7 +137,7 @@ public:
         if (should_remove)
         {
           // Remove from blocking manager if client was blocked
-          g_blocking_manager.remove_blocked_client(client_fd);
+          blocking_manager_.remove_blocked_client(client_fd);
           close(client_fd);
           it = clients_.erase(it);
         }
@@ -156,7 +156,7 @@ public:
           it->second.pending_responses.push(response);
         }
       };
-      g_blocking_manager.check_timeouts(send_callback);
+      blocking_manager_.check_timeouts(send_callback);
     }
 
     // Cleanup
@@ -358,7 +358,7 @@ private:
   void execute_command(ClientState &client, std::string_view request)
   {
     // Skip if client is currently blocked
-    if (g_blocking_manager.is_client_blocked(client.fd))
+    if (blocking_manager_.is_client_blocked(client.fd))
     {
       std::cout << "Ignoring command from blocked client " << client.fd << std::endl;
       return;
@@ -408,7 +408,7 @@ private:
       handle_get(client.fd, parts, kv_store_);
     else if (cmd == CMD_LPUSH)
     {
-      handle_lpush(client.fd, parts, kv_store_);
+      handle_lpush(client.fd, parts, kv_store_, blocking_manager_);
       // After LPUSH, try to unblock waiting clients
 
       std::string key(parts[1]);
@@ -420,11 +420,11 @@ private:
           it->second.pending_responses.push(response);
         }
       };
-      g_blocking_manager.try_unblock_clients_for_key(key, kv_store_, send_callback);
+      blocking_manager_.try_unblock_clients_for_key(key, kv_store_, send_callback);
     }
     else if (cmd == CMD_RPUSH)
     {
-      handle_rpush(client.fd, parts, kv_store_);
+      handle_rpush(client.fd, parts, kv_store_, blocking_manager_);
       // After RPUSH, try to unblock waiting clients
 
       std::string key(parts[1]);
@@ -436,7 +436,7 @@ private:
           it->second.pending_responses.push(response);
         }
       };
-      g_blocking_manager.try_unblock_clients_for_key(key, kv_store_, send_callback);
+      blocking_manager_.try_unblock_clients_for_key(key, kv_store_, send_callback);
     }
     else if (cmd == CMD_LRANGE)
       handle_lrange(client.fd, parts, kv_store_);
@@ -457,13 +457,13 @@ private:
           if (auto it = clients_.find(cfd); it != clients_.end())
             it->second.pending_responses.push(resp);
         };
-        g_blocking_manager.try_unblock_stream_clients_for_key(key, kv_store_, send_cb);
+        blocking_manager_.try_unblock_stream_clients_for_key(key, kv_store_, send_cb);
       }
     }
     else if (cmd == CMD_XRANGE)
       handle_xrange(client.fd, parts, kv_store_);
     else if (cmd == CMD_XREAD)
-      handle_xread(client.fd, parts, kv_store_);
+      handle_xread(client.fd, parts, kv_store_, blocking_manager_);
     else
       send(client.fd, RESP_NIL, strlen(RESP_NIL), 0);
   }
@@ -475,7 +475,7 @@ private:
       // Try immediate execution first
       if (can_execute_blpop_immediately(parts))
       {
-        handle_blpop(client.fd, parts, kv_store_);
+        handle_blpop(client.fd, parts, kv_store_, blocking_manager_);
         return;
       }
 
@@ -504,7 +504,7 @@ private:
       }
 
       std::cout << "Client " << client.fd << " is now blocking on " << cmd << std::endl;
-      g_blocking_manager.add_blocked_client(client.fd, keys, timeout);
+      blocking_manager_.add_blocked_client(client.fd, keys, timeout);
     }
   }
 
@@ -534,6 +534,7 @@ private:
   int port_;
   std::map<int, ClientState> clients_;
   Store kv_store_;
+  BlockingManager blocking_manager_;
 };
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv)

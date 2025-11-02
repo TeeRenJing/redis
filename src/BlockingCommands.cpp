@@ -7,7 +7,8 @@
 #include <string>
 
 // Handles the BLPOP command for blocking list pop
-void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store)
+void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
+                  BlockingManager &blocking_manager)
 {
     std::cout << "[BLPOP LOG] Client " << client_fd << " called BLPOP" << std::endl;
 
@@ -115,39 +116,40 @@ void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Sto
     if (timeout_seconds == 0.0)
     {
         std::cout << "[BLPOP LOG] Client " << client_fd << " - INFINITE TIMEOUT, adding indefinite block" << std::endl;
-        g_blocking_manager.add_indefinitely_blocked_client(client_fd, keys);
+        blocking_manager.add_indefinitely_blocked_client(client_fd, keys);
     }
     else
     {
         std::chrono::duration<double> timeout(timeout_seconds);
         std::cout << "[BLPOP LOG] Client " << client_fd << " - Adding finite block with timeout=" << timeout.count() << " seconds" << std::endl;
-        g_blocking_manager.add_blocked_client(client_fd, keys, timeout);
+        blocking_manager.add_blocked_client(client_fd, keys, timeout);
     }
 
     std::cout << "[BLPOP LOG] Client " << client_fd << " - handle_blpop finished (client blocked)" << std::endl;
 }
 
 // Helper: Check timeouts periodically
-void check_blocked_client_timeouts(std::function<void(int, const std::string &)> send_callback)
+void check_blocked_client_timeouts(std::function<void(int, const std::string &)> send_callback,
+                                   BlockingManager &blocking_manager)
 {
-    g_blocking_manager.check_timeouts(send_callback);
+    blocking_manager.check_timeouts(send_callback);
 }
 
 // Helper: Cleanup when client disconnects
-void cleanup_client_on_disconnect(int client_fd)
+void cleanup_client_on_disconnect(int client_fd, BlockingManager &blocking_manager)
 {
     std::cout << "[CLEANUP LOG] Client " << client_fd << " disconnected" << std::endl;
-    if (g_blocking_manager.is_client_blocked(client_fd))
+    if (blocking_manager.is_client_blocked(client_fd))
     {
         std::cout << "[CLEANUP LOG] Cleaning up blocked client " << client_fd << std::endl;
-        g_blocking_manager.remove_blocked_client(client_fd);
+        blocking_manager.remove_blocked_client(client_fd);
     }
 }
 
 // Debug: Print current blocking stats
-void print_blocking_stats()
+void print_blocking_stats(const BlockingManager &blocking_manager)
 {
     std::cout << "Blocking Stats:" << std::endl;
-    std::cout << "  Blocked clients: " << g_blocking_manager.get_blocked_client_count() << std::endl;
-    std::cout << "  Blocked keys: " << g_blocking_manager.get_blocked_keys_count() << std::endl;
+    std::cout << "  Blocked clients: " << blocking_manager.get_blocked_client_count() << std::endl;
+    std::cout << "  Blocked keys: " << blocking_manager.get_blocked_keys_count() << std::endl;
 }

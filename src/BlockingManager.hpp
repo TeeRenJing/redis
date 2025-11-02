@@ -138,6 +138,3 @@ private:
     KeyWaiters stream_blocked_clients_; // stream waiters
     ClientMap client_info_;
 };
-
-// Global instance
-extern BlockingManager g_blocking_manager;

@@ -1,7 +1,9 @@
 #pragma once
-#include "Store.hpp"
 #include <string_view>
 #include <vector>
+#include "Store.hpp"
+
+class BlockingManager;
 
 constexpr const char *PX_ARG = "PX";
 
@@ -36,12 +38,12 @@ void handle_ping(int client_fd);
 void handle_echo(int client_fd, const std::vector<std::string_view> &parts);
 void handle_set(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_get(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
-void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
-void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
+void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store, BlockingManager &blocking_manager);
+void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store, BlockingManager &blocking_manager);
 void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_llen(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_type(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_xrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
-void handle_xread(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
+void handle_xread(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store, BlockingManager &blocking_manager);

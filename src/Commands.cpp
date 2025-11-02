@@ -115,7 +115,8 @@ void handle_get(int client_fd, const std::vector<std::string_view> &args, Store 
 // ============================
 // LPUSH
 // ============================
-void handle_lpush(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_lpush(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
+                  BlockingManager &blocking_manager)
 {
     if (args.size() < 3)
     {
@@ -152,15 +153,16 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &args, Stor
     send_response(client_fd, resp);
 
     // Unblock any waiting clients
-    g_blocking_manager.try_unblock_clients_for_key(key, kv_store,
-                                                   [](int fd, const std::string &resp)
-                                                   { send(fd, resp.data(), resp.size(), 0); });
+    blocking_manager.try_unblock_clients_for_key(
+        key, kv_store, [](int fd, const std::string &resp)
+        { send(fd, resp.data(), resp.size(), 0); });
 }
 
 // ============================
 // RPUSH
 // ============================
-void handle_rpush(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_rpush(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
+                  BlockingManager &blocking_manager)
 {
     if (args.size() < 3)
     {
@@ -193,9 +195,9 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &args, Stor
     std::string resp = ":" + std::to_string(list_ptr->values.size()) + "\r\n";
     send_response(client_fd, resp);
 
-    g_blocking_manager.try_unblock_clients_for_key(key, kv_store,
-                                                   [](int fd, const std::string &resp)
-                                                   { send(fd, resp.data(), resp.size(), 0); });
+    blocking_manager.try_unblock_clients_for_key(
+        key, kv_store, [](int fd, const std::string &resp)
+        { send(fd, resp.data(), resp.size(), 0); });
 }
 
 // ============================
@@ -624,7 +626,8 @@ void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Sto
 // XREAD (multi-stream, exclusive, happy path)
 // ============================
 // XREAD STREAMS <k1> <k2> ... <id1> <id2> ...
-void handle_xread(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_xread(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
+                  BlockingManager &blocking_manager)
 {
     // XREAD [BLOCK <ms>] STREAMS <k1> <k2> ... <id1> <id2> ...
     size_t i = 1;
@@ -754,7 +757,7 @@ void handle_xread(int client_fd, const std::vector<std::string_view> &args, Stor
 
     if (has_block)
     {
-        g_blocking_manager.add_blocked_xread_client(client_fd, wait_spec, block_ms);
+        blocking_manager.add_blocked_xread_client(client_fd, wait_spec, block_ms);
         return; // manager will reply later (or timeout with *-1)
     }
 
