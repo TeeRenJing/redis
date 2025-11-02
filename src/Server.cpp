@@ -24,6 +24,7 @@ struct ClientState
   std::string buffer{};
   std::queue<std::string> pending_responses{};
   bool in_transaction = false;
+  std::vector<std::vector<std::string>> queued_commands{};
 };
 
 class Server
@@ -365,6 +366,18 @@ private:
       return;
     }
 
+    auto default_sender = [this](int target_fd, std::string_view resp)
+    {
+      if (auto it = clients_.find(target_fd); it != clients_.end())
+      {
+        it->second.pending_responses.emplace(resp);
+      }
+      else
+      {
+        ::send(target_fd, resp.data(), resp.size(), 0);
+      }
+    };
+
     auto parts = parse_resp(request);
     if (parts.empty())
     {
@@ -372,7 +385,7 @@ private:
       auto end = request.find_last_not_of(" \r\n");
       if (start == std::string_view::npos || end == std::string_view::npos)
       {
-        handle_ping(client.fd);
+        handle_ping(client.fd, default_sender);
         return;
       }
       std::string_view trimmed = request.substr(start, end - start + 1);
@@ -384,7 +397,7 @@ private:
 
     if (parts.empty())
     {
-      handle_ping(client.fd);
+      handle_ping(client.fd, default_sender);
       return;
     }
 
@@ -395,93 +408,81 @@ private:
                              { return c == '\n' || c == '\r'; }),
               cmd.end());
 
-    // Handle blocking commands specially
-    if (cmd == CMD_BLPOP)
-      handle_blocking_command(client, cmd, parts);
-    // Handle regular commands
-    else if (cmd == CMD_PING)
-      handle_ping(client.fd);
-    else if (cmd == CMD_ECHO)
-      handle_echo(client.fd, parts);
-    else if (cmd == CMD_SET)
-      handle_set(client.fd, parts, kv_store_);
-    else if (cmd == CMD_GET)
-      handle_get(client.fd, parts, kv_store_);
-    else if (cmd == CMD_LPUSH)
-    {
-      handle_lpush(client.fd, parts, kv_store_, blocking_manager_);
-      // After LPUSH, try to unblock waiting clients
-
-      std::string key(parts[1]);
-      auto send_callback = [this](int client_fd, const std::string &response)
-      {
-        auto it = clients_.find(client_fd);
-        if (it != clients_.end())
-        {
-          it->second.pending_responses.push(response);
-        }
-      };
-      blocking_manager_.try_unblock_clients_for_key(key, kv_store_, send_callback);
-    }
-    else if (cmd == CMD_RPUSH)
-    {
-      handle_rpush(client.fd, parts, kv_store_, blocking_manager_);
-      // After RPUSH, try to unblock waiting clients
-
-      std::string key(parts[1]);
-      auto send_callback = [this](int client_fd, const std::string &response)
-      {
-        auto it = clients_.find(client_fd);
-        if (it != clients_.end())
-        {
-          it->second.pending_responses.push(response);
-        }
-      };
-      blocking_manager_.try_unblock_clients_for_key(key, kv_store_, send_callback);
-    }
-    else if (cmd == CMD_LRANGE)
-      handle_lrange(client.fd, parts, kv_store_);
-    else if (cmd == CMD_LLEN)
-      handle_llen(client.fd, parts, kv_store_);
-    else if (cmd == CMD_LPOP)
-      handle_lpop(client.fd, parts, kv_store_);
-    else if (cmd == CMD_INCR)
-      handle_incr(client.fd, parts, kv_store_);
-    else if (cmd == CMD_MULTI)
+    if (cmd == CMD_MULTI)
     {
       if (client.in_transaction)
       {
-        const char *err = "-ERR MULTI calls cannot be nested\r\n";
-        send(client.fd, err, strlen(err), 0);
+        client.pending_responses.emplace("-ERR MULTI calls cannot be nested\r\n");
       }
       else
       {
         client.in_transaction = true;
-        send(client.fd, RESP_OK, strlen(RESP_OK), 0);
+        client.queued_commands.clear();
+        client.pending_responses.emplace(RESP_OK);
       }
+      return;
     }
-    else if (cmd == CMD_TYPE)
-      handle_type(client.fd, parts, kv_store_);
-    else if (cmd == CMD_XADD)
+
+    if (cmd == CMD_EXEC)
     {
-      handle_xadd(client.fd, parts, kv_store_);
-      if (parts.size() >= 2)
+      if (!client.in_transaction)
       {
-        std::string key(parts[1]);
-        auto send_cb = [this](int cfd, const std::string &resp)
-        {
-          if (auto it = clients_.find(cfd); it != clients_.end())
-            it->second.pending_responses.push(resp);
-        };
-        blocking_manager_.try_unblock_stream_clients_for_key(key, kv_store_, send_cb);
+        client.pending_responses.emplace("-ERR EXEC without MULTI\r\n");
+        return;
       }
+
+      auto queued = std::move(client.queued_commands);
+      client.queued_commands.clear();
+      client.in_transaction = false;
+
+      std::vector<std::string> exec_responses;
+      exec_responses.reserve(queued.size());
+
+      for (auto &stored_parts : queued)
+      {
+        if (stored_parts.empty())
+          continue;
+
+        std::vector<std::string_view> part_views;
+        part_views.reserve(stored_parts.size());
+        for (const auto &part : stored_parts)
+        {
+          part_views.emplace_back(part);
+        }
+
+        const std::string &stored_cmd = stored_parts.front();
+
+        auto capture_sender = [&exec_responses](int, std::string_view resp)
+        {
+          exec_responses.emplace_back(resp);
+        };
+
+        dispatch_command(client, stored_cmd, part_views, capture_sender);
+      }
+
+      std::string response = "*" + std::to_string(exec_responses.size()) + "\r\n";
+      for (const auto &entry : exec_responses)
+      {
+        response += entry;
+      }
+      client.pending_responses.push(std::move(response));
+      return;
     }
-    else if (cmd == CMD_XRANGE)
-      handle_xrange(client.fd, parts, kv_store_);
-    else if (cmd == CMD_XREAD)
-      handle_xread(client.fd, parts, kv_store_, blocking_manager_);
-    else
-      send(client.fd, RESP_NIL, strlen(RESP_NIL), 0);
+
+    if (client.in_transaction)
+    {
+      std::vector<std::string> stored;
+      stored.reserve(parts.size());
+      stored.emplace_back(cmd);
+      for (size_t i = 1; i < parts.size(); ++i)
+        stored.emplace_back(parts[i]);
+
+      client.queued_commands.push_back(std::move(stored));
+      client.pending_responses.emplace(RESP_QUEUED);
+      return;
+    }
+
+    dispatch_command(client, cmd, parts, default_sender);
   }
 
   void handle_blocking_command(ClientState &client, const std::string &cmd, const std::vector<std::string_view> &parts)
@@ -545,6 +546,92 @@ private:
       }
     }
     return false;
+  }
+
+  void dispatch_command(ClientState &client, const std::string &cmd, const std::vector<std::string_view> &parts,
+                        const ResponseSender &respond)
+  {
+    if (cmd == CMD_BLPOP)
+    {
+      handle_blocking_command(client, cmd, parts);
+    }
+    else if (cmd == CMD_PING)
+      handle_ping(client.fd, respond);
+    else if (cmd == CMD_ECHO)
+      handle_echo(client.fd, parts, respond);
+    else if (cmd == CMD_SET)
+      handle_set(client.fd, parts, kv_store_, respond);
+    else if (cmd == CMD_GET)
+      handle_get(client.fd, parts, kv_store_, respond);
+    else if (cmd == CMD_LPUSH)
+    {
+      handle_lpush(client.fd, parts, kv_store_, blocking_manager_, respond);
+      if (parts.size() >= 2)
+      {
+        std::string key(parts[1]);
+        auto send_callback = [this](int client_fd, const std::string &response)
+        {
+          auto it = clients_.find(client_fd);
+          if (it != clients_.end())
+          {
+            it->second.pending_responses.push(response);
+          }
+        };
+        blocking_manager_.try_unblock_clients_for_key(key, kv_store_, send_callback);
+      }
+    }
+    else if (cmd == CMD_RPUSH)
+    {
+      handle_rpush(client.fd, parts, kv_store_, blocking_manager_, respond);
+      if (parts.size() >= 2)
+      {
+        std::string key(parts[1]);
+        auto send_callback = [this](int client_fd, const std::string &response)
+        {
+          auto it = clients_.find(client_fd);
+          if (it != clients_.end())
+          {
+            it->second.pending_responses.push(response);
+          }
+        };
+        blocking_manager_.try_unblock_clients_for_key(key, kv_store_, send_callback);
+      }
+    }
+    else if (cmd == CMD_LRANGE)
+      handle_lrange(client.fd, parts, kv_store_, respond);
+    else if (cmd == CMD_LLEN)
+      handle_llen(client.fd, parts, kv_store_, respond);
+    else if (cmd == CMD_LPOP)
+      handle_lpop(client.fd, parts, kv_store_, respond);
+    else if (cmd == CMD_INCR)
+      handle_incr(client.fd, parts, kv_store_, respond);
+    else if (cmd == CMD_TYPE)
+      handle_type(client.fd, parts, kv_store_, respond);
+    else if (cmd == CMD_XADD)
+    {
+      handle_xadd(client.fd, parts, kv_store_, respond);
+      if (parts.size() >= 2)
+      {
+        std::string key(parts[1]);
+        auto send_cb = [this](int cfd, const std::string &resp)
+        {
+          if (auto it = clients_.find(cfd); it != clients_.end())
+            it->second.pending_responses.push(resp);
+        };
+        blocking_manager_.try_unblock_stream_clients_for_key(key, kv_store_, send_cb);
+      }
+    }
+    else if (cmd == CMD_XRANGE)
+      handle_xrange(client.fd, parts, kv_store_, respond);
+    else if (cmd == CMD_XREAD)
+      handle_xread(client.fd, parts, kv_store_, blocking_manager_, respond);
+    else
+    {
+      if (respond)
+        respond(client.fd, RESP_NIL);
+      else
+        ::send(client.fd, RESP_NIL, std::strlen(RESP_NIL), 0);
+    }
   }
 
   int port_;

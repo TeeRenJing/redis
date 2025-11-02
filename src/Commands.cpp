@@ -12,53 +12,74 @@
 #include <optional>
 #include <iostream>
 #include <limits>
+#include <utility>
 
 // ============================
 // SEND HELPER
 // ============================
 // Wrapper to send RESP strings safely.
+inline void send_response(const ResponseSender &respond, int client_fd, const char *resp)
+{
+    if (respond)
+    {
+        respond(client_fd, std::string_view(resp, strlen(resp)));
+        return;
+    }
+    send(client_fd, resp, strlen(resp), 0);
+}
+
+inline void send_response(const ResponseSender &respond, int client_fd, std::string_view resp)
+{
+    if (respond)
+    {
+        respond(client_fd, resp);
+        return;
+    }
+    send(client_fd, resp.data(), resp.size(), 0);
+}
+
 inline void send_response(int client_fd, const char *resp)
 {
-    send(client_fd, resp, strlen(resp), 0);
+    send_response(ResponseSender{}, client_fd, std::string_view(resp, strlen(resp)));
 }
 
 inline void send_response(int client_fd, std::string_view resp)
 {
-    send(client_fd, resp.data(), resp.size(), 0);
+    send_response(ResponseSender{}, client_fd, resp);
 }
 
 // ============================
 // PING
 // ============================
-void handle_ping(int client_fd)
+void handle_ping(int client_fd, const ResponseSender &respond)
 {
-    send_response(client_fd, RESP_PONG);
+    send_response(respond, client_fd, RESP_PONG);
 }
 
 // ============================
 // ECHO
 // ============================
-void handle_echo(int client_fd, const std::vector<std::string_view> &args)
+void handle_echo(int client_fd, const std::vector<std::string_view> &args, const ResponseSender &respond)
 {
     if (args.size() < 2)
     {
-        send_response(client_fd, RESP_NIL);
+        send_response(respond, client_fd, RESP_NIL);
         return;
     }
 
     const auto &val = args[1];
     std::string resp = "$" + std::to_string(val.size()) + "\r\n" + std::string(val) + "\r\n";
-    send_response(client_fd, resp);
+    send_response(respond, client_fd, resp);
 }
 
 // ============================
 // SET
 // ============================
-void handle_set(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_set(int client_fd, const std::vector<std::string_view> &args, Store &kv_store, const ResponseSender &respond)
 {
     if (args.size() < 3)
     {
-        send_response(client_fd, RESP_NIL);
+        send_response(respond, client_fd, RESP_NIL);
         return;
     }
 
@@ -74,17 +95,17 @@ void handle_set(int client_fd, const std::vector<std::string_view> &args, Store 
     }
 
     kv_store[key] = std::make_unique<StringValue>(value, expiry);
-    send_response(client_fd, RESP_OK);
+    send_response(respond, client_fd, RESP_OK);
 }
 
 // ============================
 // GET
 // ============================
-void handle_get(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_get(int client_fd, const std::vector<std::string_view> &args, Store &kv_store, const ResponseSender &respond)
 {
     if (args.size() < 2)
     {
-        send_response(client_fd, RESP_NIL);
+        send_response(respond, client_fd, RESP_NIL);
         return;
     }
 
@@ -92,7 +113,7 @@ void handle_get(int client_fd, const std::vector<std::string_view> &args, Store 
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
-        send_response(client_fd, RESP_NIL);
+        send_response(respond, client_fd, RESP_NIL);
         return;
     }
 
@@ -101,15 +122,15 @@ void handle_get(int client_fd, const std::vector<std::string_view> &args, Store 
         if (str_val->is_expired())
         {
             kv_store.erase(it);
-            send_response(client_fd, RESP_NIL);
+            send_response(respond, client_fd, RESP_NIL);
             return;
         }
         std::string resp = "$" + std::to_string(str_val->value.size()) + "\r\n" + str_val->value + "\r\n";
-        send_response(client_fd, resp);
+        send_response(respond, client_fd, resp);
     }
     else
     {
-        send_response(client_fd, RESP_NIL);
+        send_response(respond, client_fd, RESP_NIL);
     }
 }
 
@@ -117,11 +138,11 @@ void handle_get(int client_fd, const std::vector<std::string_view> &args, Store 
 // LPUSH
 // ============================
 void handle_lpush(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
-                  BlockingManager &blocking_manager)
+                  BlockingManager &blocking_manager, const ResponseSender &respond)
 {
     if (args.size() < 3)
     {
-        send_response(client_fd, RESP_NIL);
+        send_response(respond, client_fd, RESP_NIL);
         return;
     }
 
@@ -133,7 +154,7 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &args, Stor
         list_ptr = dynamic_cast<ListValue *>(it->second.get());
         if (!list_ptr)
         {
-            send_response(client_fd, RESP_NIL);
+            send_response(respond, client_fd, RESP_NIL);
             return;
         }
     }
@@ -151,7 +172,7 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &args, Stor
     }
 
     std::string resp = ":" + std::to_string(list_ptr->values.size()) + "\r\n";
-    send_response(client_fd, resp);
+    send_response(respond, client_fd, resp);
 
     // Unblock any waiting clients
     blocking_manager.try_unblock_clients_for_key(
@@ -163,11 +184,11 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &args, Stor
 // RPUSH
 // ============================
 void handle_rpush(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
-                  BlockingManager &blocking_manager)
+                  BlockingManager &blocking_manager, const ResponseSender &respond)
 {
     if (args.size() < 3)
     {
-        send_response(client_fd, RESP_NIL);
+        send_response(respond, client_fd, RESP_NIL);
         return;
     }
 
@@ -179,7 +200,7 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &args, Stor
         list_ptr = dynamic_cast<ListValue *>(it->second.get());
         if (!list_ptr)
         {
-            send_response(client_fd, RESP_NIL);
+            send_response(respond, client_fd, RESP_NIL);
             return;
         }
     }
@@ -194,7 +215,7 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &args, Stor
         list_ptr->values.push_back(std::string(args[i]));
 
     std::string resp = ":" + std::to_string(list_ptr->values.size()) + "\r\n";
-    send_response(client_fd, resp);
+    send_response(respond, client_fd, resp);
 
     blocking_manager.try_unblock_clients_for_key(
         key, kv_store, [](int fd, const std::string &resp)
@@ -204,11 +225,11 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &args, Stor
 // ============================
 // LLEN
 // ============================
-void handle_llen(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_llen(int client_fd, const std::vector<std::string_view> &args, Store &kv_store, const ResponseSender &respond)
 {
     if (args.size() < 2)
     {
-        send_response(client_fd, RESP_NIL);
+        send_response(respond, client_fd, RESP_NIL);
         return;
     }
 
@@ -216,28 +237,28 @@ void handle_llen(int client_fd, const std::vector<std::string_view> &args, Store
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
-        send_response(client_fd, ":0\r\n");
+        send_response(respond, client_fd, ":0\r\n");
         return;
     }
 
     if (auto *list_val = dynamic_cast<ListValue *>(it->second.get()))
     {
-        send_response(client_fd, (":" + std::to_string(list_val->values.size()) + "\r\n").c_str());
+        send_response(respond, client_fd, (":" + std::to_string(list_val->values.size()) + "\r\n").c_str());
     }
     else
     {
-        send_response(client_fd, RESP_NIL);
+        send_response(respond, client_fd, RESP_NIL);
     }
 }
 
 // ============================
 // LPOP
 // ============================
-void handle_lpop(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_lpop(int client_fd, const std::vector<std::string_view> &args, Store &kv_store, const ResponseSender &respond)
 {
     if (args.size() < 2)
     {
-        send_response(client_fd, RESP_NIL);
+        send_response(respond, client_fd, RESP_NIL);
         return;
     }
 
@@ -249,7 +270,7 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &args, Store
         count = std::stoi(std::string(args[2]));
         if (count < 0)
         {
-            send_response(client_fd, "-ERR value is not an integer or out of range\r\n");
+            send_response(respond, client_fd, "-ERR value is not an integer or out of range\r\n");
             return;
         }
     }
@@ -257,19 +278,19 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &args, Store
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
-        send_response(client_fd, (args.size() > 2) ? RESP_EMPTY_ARRAY : RESP_NIL);
+        send_response(respond, client_fd, (args.size() > 2) ? RESP_EMPTY_ARRAY : RESP_NIL);
         return;
     }
 
     auto *list_val = dynamic_cast<ListValue *>(it->second.get());
     if (!list_val)
     {
-        send_response(client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+        send_response(respond, client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
         return;
     }
     if (list_val->values.empty())
     {
-        send_response(client_fd, (args.size() > 2) ? RESP_EMPTY_ARRAY : RESP_NIL);
+        send_response(respond, client_fd, (args.size() > 2) ? RESP_EMPTY_ARRAY : RESP_NIL);
         return;
     }
 
@@ -291,17 +312,17 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &args, Store
 
     if (list_val->values.empty())
         kv_store.erase(it);
-    send_response(client_fd, resp);
+    send_response(respond, client_fd, resp);
 }
 
 // ============================
 // INCR
 // ============================
-void handle_incr(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_incr(int client_fd, const std::vector<std::string_view> &args, Store &kv_store, const ResponseSender &respond)
 {
     if (args.size() != 2)
     {
-        send_response(client_fd, "-ERR wrong number of arguments for 'incr' command\r\n");
+        send_response(respond, client_fd, "-ERR wrong number of arguments for 'incr' command\r\n");
         return;
     }
 
@@ -321,7 +342,7 @@ void handle_incr(int client_fd, const std::vector<std::string_view> &args, Store
         auto *str_val = dynamic_cast<StringValue *>(it->second.get());
         if (!str_val)
         {
-            send_response(client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+            send_response(respond, client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
             return;
         }
 
@@ -340,13 +361,13 @@ void handle_incr(int client_fd, const std::vector<std::string_view> &args, Store
             }
             catch (...)
             {
-                send_response(client_fd, "-ERR value is not an integer or out of range\r\n");
+                send_response(respond, client_fd, "-ERR value is not an integer or out of range\r\n");
                 return;
             }
 
             if (current_value == std::numeric_limits<long long>::max())
             {
-                send_response(client_fd, "-ERR increment or decrement would overflow\r\n");
+                send_response(respond, client_fd, "-ERR increment or decrement would overflow\r\n");
                 return;
             }
 
@@ -356,7 +377,7 @@ void handle_incr(int client_fd, const std::vector<std::string_view> &args, Store
     }
 
     std::string resp = ":" + std::to_string(result_value) + "\r\n";
-    send_response(client_fd, resp);
+    send_response(respond, client_fd, resp);
 }
 // ============================
 // LRANGE
@@ -364,11 +385,12 @@ void handle_incr(int client_fd, const std::vector<std::string_view> &args, Store
 // LRANGE <key> <start> <stop>
 // Returns a RESP array of elements in the specified range.
 // Negative indices are supported (e.g., -1 is the last element).
-void handle_lrange(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_lrange(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
+                   const ResponseSender &respond)
 {
     if (args.size() != 4)
     {
-        send_response(client_fd, RESP_ERR_GENERIC);
+        send_response(respond, client_fd, RESP_ERR_GENERIC);
         return;
     }
 
@@ -381,14 +403,14 @@ void handle_lrange(int client_fd, const std::vector<std::string_view> &args, Sto
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
-        send_response(client_fd, RESP_EMPTY_ARRAY);
+        send_response(respond, client_fd, RESP_EMPTY_ARRAY);
         return;
     }
 
     auto *list_val = dynamic_cast<ListValue *>(it->second.get());
     if (!list_val)
     {
-        send_response(client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+        send_response(respond, client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
         return;
     }
 
@@ -405,7 +427,7 @@ void handle_lrange(int client_fd, const std::vector<std::string_view> &args, Sto
 
     if (start > stop || start >= len)
     {
-        send_response(client_fd, RESP_EMPTY_ARRAY);
+        send_response(respond, client_fd, RESP_EMPTY_ARRAY);
         return;
     }
 
@@ -415,17 +437,18 @@ void handle_lrange(int client_fd, const std::vector<std::string_view> &args, Sto
         resp += "$" + std::to_string(values[i].size()) + "\r\n" + values[i] + "\r\n";
     }
 
-    send_response(client_fd, resp);
+    send_response(respond, client_fd, resp);
 }
 
 // ============================
 // TYPE
 // ============================
-void handle_type(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_type(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
+                 const ResponseSender &respond)
 {
     if (args.size() < 2)
     {
-        send_response(client_fd, "+none\r\n");
+        send_response(respond, client_fd, "+none\r\n");
         return;
     }
 
@@ -433,7 +456,7 @@ void handle_type(int client_fd, const std::vector<std::string_view> &args, Store
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
-        send_response(client_fd, "+none\r\n");
+        send_response(respond, client_fd, "+none\r\n");
         return;
     }
 
@@ -447,17 +470,18 @@ void handle_type(int client_fd, const std::vector<std::string_view> &args, Store
     else
         type_str = "none";
 
-    send_response(client_fd, ("+" + type_str + "\r\n").c_str());
+    send_response(respond, client_fd, ("+" + type_str + "\r\n").c_str());
 }
 
 // ============================
 // XADD
 // ============================
-void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
+                 const ResponseSender &respond)
 {
     if (args.size() < 5 || ((args.size() - 3) % 2 != 0))
     {
-        send_response(client_fd, "-ERR wrong number of arguments for 'xadd' command\r\n");
+        send_response(respond, client_fd, "-ERR wrong number of arguments for 'xadd' command\r\n");
         return;
     }
 
@@ -475,7 +499,7 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store
         auto dash = id_sv.find('-');
         if (dash == std::string_view::npos)
         {
-            send_response(client_fd, RESP_ERR_GENERIC);
+            send_response(respond, client_fd, RESP_ERR_GENERIC);
             return;
         }
 
@@ -484,7 +508,7 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store
         if (ms_str.empty() || ms_str == "*")
         {
             // Partial auto-generation (time part is *) - not supported in this stage
-            send_response(client_fd, RESP_ERR_GENERIC);
+            send_response(respond, client_fd, RESP_ERR_GENERIC);
             return;
         }
 
@@ -504,7 +528,7 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store
 
         if (ms == 0 && seq == 0 && !auto_seq)
         {
-            send_response(client_fd, RESP_ERR_XADD_ZERO);
+            send_response(respond, client_fd, RESP_ERR_XADD_ZERO);
             return;
         }
     }
@@ -522,7 +546,7 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store
         stream = dynamic_cast<StreamValue *>(it->second.get());
         if (!stream)
         {
-            send_response(client_fd, RESP_ERR_GENERIC);
+            send_response(respond, client_fd, RESP_ERR_GENERIC);
             return;
         }
     }
@@ -594,7 +618,7 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store
             else
             {
                 // ms < last_ms - invalid (timestamp must be >= last timestamp)
-                send_response(client_fd, RESP_ERR_XADD_EQ);
+                send_response(respond, client_fd, RESP_ERR_XADD_EQ);
                 return;
             }
         }
@@ -611,7 +635,7 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store
 
             if (ms < last_ms || (ms == last_ms && seq <= last_seq))
             {
-                send_response(client_fd, RESP_ERR_XADD_EQ);
+                send_response(respond, client_fd, RESP_ERR_XADD_EQ);
                 return;
             }
         }
@@ -630,7 +654,7 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store
     stream->entries.push_back(std::move(entry));
 
     std::string resp = "$" + std::to_string(final_id.size()) + "\r\n" + final_id + "\r\n";
-    send_response(client_fd, resp);
+    send_response(respond, client_fd, resp);
 }
 
 // ============================
@@ -638,7 +662,8 @@ void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store
 // ============================
 // XRANGE <key> <start> <end>
 // Returns an array of entries: [ id, [field1, value1, ...] ]
-void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
+                   const ResponseSender &respond)
 {
     const std::string key(args[1]);
     const auto start_sv = args[2];
@@ -647,7 +672,7 @@ void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Sto
     auto it = kv_store.find(key);
     if (it == kv_store.end())
     {
-        send_response(client_fd, RESP_EMPTY_ARRAY);
+        send_response(respond, client_fd, RESP_EMPTY_ARRAY);
         return;
     }
 
@@ -685,7 +710,7 @@ void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Sto
         }
     }
 
-    send_response(client_fd, resp);
+    send_response(respond, client_fd, resp);
 }
 
 // ============================
@@ -693,7 +718,7 @@ void handle_xrange(int client_fd, const std::vector<std::string_view> &args, Sto
 // ============================
 // XREAD STREAMS <k1> <k2> ... <id1> <id2> ...
 void handle_xread(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
-                  BlockingManager &blocking_manager)
+                  BlockingManager &blocking_manager, const ResponseSender &respond)
 {
     // XREAD [BLOCK <ms>] STREAMS <k1> <k2> ... <id1> <id2> ...
     size_t i = 1;
@@ -711,7 +736,7 @@ void handle_xread(int client_fd, const std::vector<std::string_view> &args, Stor
     // Require STREAMS
     if (i >= args.size() || !(args[i] == "STREAMS" || args[i] == "streams"))
     {
-        send_response(client_fd, "-ERR XREAD syntax\r\n");
+        send_response(respond, client_fd, "-ERR XREAD syntax\r\n");
         return;
     }
     ++i;
@@ -719,14 +744,14 @@ void handle_xread(int client_fd, const std::vector<std::string_view> &args, Stor
     // Split tail into <keys>... and <ids>...
     if (i >= args.size())
     {
-        send_response(client_fd, "-ERR XREAD syntax\r\n");
+        send_response(respond, client_fd, "-ERR XREAD syntax\r\n");
         return;
     }
 
     const size_t tail = args.size() - i;
     if (tail < 2 || (tail % 2) != 0)
     { // must be even and at least one key/id pair
-        send_response(client_fd, "-ERR XREAD syntax\r\n");
+        send_response(respond, client_fd, "-ERR XREAD syntax\r\n");
         return;
     }
 
@@ -769,7 +794,7 @@ void handle_xread(int client_fd, const std::vector<std::string_view> &args, Stor
             auto from_opt = parse_xid_simple(id_sv, /*is_start=*/true);
             if (!from_opt)
             {
-                send_response(client_fd, "-ERR invalid stream ID\r\n");
+                send_response(respond, client_fd, "-ERR invalid stream ID\r\n");
                 return;
             }
             from_id = *from_opt;
@@ -817,7 +842,7 @@ void handle_xread(int client_fd, const std::vector<std::string_view> &args, Stor
                 }
             }
         }
-        send_response(client_fd, resp);
+        send_response(respond, client_fd, resp);
         return;
     }
 
@@ -827,5 +852,5 @@ void handle_xread(int client_fd, const std::vector<std::string_view> &args, Stor
         return; // manager will reply later (or timeout with *-1)
     }
 
-    send_response(client_fd, RESP_EMPTY_ARRAY); // *0\r\n
+    send_response(respond, client_fd, RESP_EMPTY_ARRAY); // *0
 }
