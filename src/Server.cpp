@@ -23,6 +23,7 @@ struct ClientState
   int fd{};
   std::string buffer{};
   std::queue<std::string> pending_responses{};
+  bool in_transaction = false;
 };
 
 class Server
@@ -446,6 +447,19 @@ private:
       handle_lpop(client.fd, parts, kv_store_);
     else if (cmd == CMD_INCR)
       handle_incr(client.fd, parts, kv_store_);
+    else if (cmd == CMD_MULTI)
+    {
+      if (client.in_transaction)
+      {
+        const char *err = "-ERR MULTI calls cannot be nested\r\n";
+        send(client.fd, err, strlen(err), 0);
+      }
+      else
+      {
+        client.in_transaction = true;
+        send(client.fd, RESP_OK, strlen(RESP_OK), 0);
+      }
+    }
     else if (cmd == CMD_TYPE)
       handle_type(client.fd, parts, kv_store_);
     else if (cmd == CMD_XADD)
