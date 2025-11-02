@@ -28,6 +28,7 @@ constexpr const char *CMD_RPUSH = "RPUSH";
 constexpr const char *CMD_LRANGE = "LRANGE";
 constexpr const char *CMD_LLEN = "LLEN";
 constexpr const char *CMD_LPOP = "LPOP";
+constexpr const char *CMD_INCR = "INCR";
 constexpr const char *CMD_TYPE = "TYPE";
 constexpr const char *CMD_XADD = "XADD";
 constexpr const char *CMD_XRANGE = "XRANGE";
@@ -43,6 +44,7 @@ void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Sto
 void handle_lrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_llen(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
+void handle_incr(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_type(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);
 void handle_xrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store);

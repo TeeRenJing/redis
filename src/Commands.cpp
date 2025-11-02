@@ -11,6 +11,7 @@
 #include <cstring>
 #include <optional>
 #include <iostream>
+#include <limits>
 
 // ============================
 // SEND HELPER
@@ -290,6 +291,71 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &args, Store
 
     if (list_val->values.empty())
         kv_store.erase(it);
+    send_response(client_fd, resp);
+}
+
+// ============================
+// INCR
+// ============================
+void handle_incr(int client_fd, const std::vector<std::string_view> &args, Store &kv_store)
+{
+    if (args.size() != 2)
+    {
+        send_response(client_fd, "-ERR wrong number of arguments for 'incr' command\r\n");
+        return;
+    }
+
+    const std::string key(args[1]);
+    constexpr auto no_expiry = std::chrono::steady_clock::time_point::max();
+
+    long long result_value = 1;
+
+    auto it = kv_store.find(key);
+    if (it == kv_store.end())
+    {
+        kv_store[key] = std::make_unique<StringValue>("1", no_expiry);
+        result_value = 1;
+    }
+    else
+    {
+        auto *str_val = dynamic_cast<StringValue *>(it->second.get());
+        if (!str_val)
+        {
+            send_response(client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+            return;
+        }
+
+        if (str_val->is_expired())
+        {
+            kv_store.erase(it);
+            kv_store[key] = std::make_unique<StringValue>("1", no_expiry);
+            result_value = 1;
+        }
+        else
+        {
+            long long current_value = 0;
+            try
+            {
+                current_value = std::stoll(str_val->value);
+            }
+            catch (...)
+            {
+                send_response(client_fd, "-ERR value is not an integer or out of range\r\n");
+                return;
+            }
+
+            if (current_value == std::numeric_limits<long long>::max())
+            {
+                send_response(client_fd, "-ERR increment or decrement would overflow\r\n");
+                return;
+            }
+
+            result_value = current_value + 1;
+            str_val->value = std::to_string(result_value);
+        }
+    }
+
+    std::string resp = ":" + std::to_string(result_value) + "\r\n";
     send_response(client_fd, resp);
 }
 // ============================

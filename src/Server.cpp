@@ -444,6 +444,8 @@ private:
       handle_llen(client.fd, parts, kv_store_);
     else if (cmd == CMD_LPOP)
       handle_lpop(client.fd, parts, kv_store_);
+    else if (cmd == CMD_INCR)
+      handle_incr(client.fd, parts, kv_store_);
     else if (cmd == CMD_TYPE)
       handle_type(client.fd, parts, kv_store_);
     else if (cmd == CMD_XADD)
