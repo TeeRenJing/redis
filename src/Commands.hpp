@@ -63,7 +63,7 @@ void handle_incr(int client_fd, const std::vector<std::string_view> &parts, Stor
                  const ResponseSender &respond = ResponseSender{});
 void handle_type(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                  const ResponseSender &respond = ResponseSender{});
-void handle_info(int client_fd, const std::vector<std::string_view> &parts,
+void handle_info(int client_fd, const std::vector<std::string_view> &parts, std::string_view role,
                  const ResponseSender &respond = ResponseSender{});
 void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                  const ResponseSender &respond = ResponseSender{});

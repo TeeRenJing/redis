@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <vector>
 #include <map>
+#include <string>
+#include <utility>
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/select.h>
@@ -31,7 +33,7 @@ struct ClientState
 class Server
 {
 public:
-  Server(int port) : port_(port) {}
+  Server(int port, std::string role) : port_(port), role_(std::move(role)) {}
 
   void run()
   {
@@ -623,7 +625,7 @@ private:
     else if (cmd == CMD_TYPE)
       handle_type(client.fd, parts, kv_store_, respond);
     else if (cmd == CMD_INFO)
-      handle_info(client.fd, parts, respond);
+      handle_info(client.fd, parts, role_, respond);
     else if (cmd == CMD_XADD)
     {
       handle_xadd(client.fd, parts, kv_store_, respond);
@@ -655,6 +657,7 @@ private:
   std::map<int, ClientState> clients_;
   Store kv_store_;
   BlockingManager blocking_manager_;
+  std::string role_;
 };
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv)
@@ -662,6 +665,9 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv)
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
   int port = 6379;
+  std::string role = "master";
+  std::string replica_host;
+  int replica_port = 0;
   for (int i = 1; i < argc; ++i)
   {
     std::string arg = argv[i];
@@ -669,8 +675,26 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv)
     {
       port = std::stoi(argv[++i]);
     }
+    else if (arg == "--replicaof" && i + 1 < argc)
+    {
+      std::string host_port = argv[++i];
+      auto space_pos = host_port.find(' ');
+      if (space_pos != std::string::npos)
+      {
+        replica_host = host_port.substr(0, space_pos);
+        replica_port = std::stoi(host_port.substr(space_pos + 1));
+      }
+      else if (i + 1 < argc)
+      {
+        replica_host = host_port;
+        replica_port = std::stoi(argv[++i]);
+      }
+
+      if (!replica_host.empty())
+        role = "slave";
+    }
   }
-  Server server(port);
+  Server server(port, role);
   server.run();
   return 0;
 }
