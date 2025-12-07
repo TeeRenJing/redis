@@ -13,6 +13,7 @@ struct ValueBase
 
 struct StringValue : public ValueBase
 {
+    // Simple string with optional expiration.
     std::string value;
     std::chrono::steady_clock::time_point expiry;
 
@@ -28,6 +29,7 @@ struct StringValue : public ValueBase
 
 struct ListValue : public ValueBase
 {
+    // Redis list semantics (push/pop from ends).
     std::vector<std::string> values;
 };
 

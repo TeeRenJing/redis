@@ -35,6 +35,7 @@ constexpr const char *CMD_LPOP = "LPOP";
 constexpr const char *CMD_INCR = "INCR";
 constexpr const char *CMD_MULTI = "MULTI";
 constexpr const char *CMD_EXEC = "EXEC";
+constexpr const char *CMD_DISCARD = "DISCARD";
 constexpr const char *CMD_TYPE = "TYPE";
 constexpr const char *CMD_XADD = "XADD";
 constexpr const char *CMD_XRANGE = "XRANGE";

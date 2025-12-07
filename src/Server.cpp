@@ -20,11 +20,12 @@
 
 struct ClientState
 {
+  // Per-connection state so the event loop can make progress without blocking.
   int fd{};
-  std::string buffer{};
-  std::queue<std::string> pending_responses{};
-  bool in_transaction = false;
-  std::vector<std::vector<std::string>> queued_commands{};
+  std::string buffer{};                             // bytes read but not yet parsed into complete RESP frames
+  std::queue<std::string> pending_responses{};      // outbound RESP replies waiting to be written
+  bool in_transaction = false;                      // true while between MULTI/EXEC
+  std::vector<std::vector<std::string>> queued_commands{}; // commands staged during MULTI
 };
 
 class Server
@@ -420,6 +421,20 @@ private:
         client.queued_commands.clear();
         client.pending_responses.emplace(RESP_OK);
       }
+      return;
+    }
+
+    if (cmd == CMD_DISCARD)
+    {
+      if (!client.in_transaction)
+      {
+        client.pending_responses.emplace("-ERR DISCARD without MULTI\r\n");
+        return;
+      }
+
+      client.in_transaction = false;
+      client.queued_commands.clear();
+      client.pending_responses.emplace(RESP_OK);
       return;
     }
 

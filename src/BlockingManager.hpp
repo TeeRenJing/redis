@@ -76,8 +76,8 @@ struct BlockedClient
         StreamRead
     }; // NEW: what are we blocking for?
 
-    FileDescriptor client_fd{};
-    std::vector<Key> keys;
+    FileDescriptor client_fd{};                         // waiting socket
+    std::vector<Key> keys;                             // keys this client is blocked on
     std::chrono::steady_clock::time_point block_start{};
     Millis timeout{0};
     bool is_indefinite = false;
