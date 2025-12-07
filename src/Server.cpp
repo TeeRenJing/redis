@@ -15,6 +15,7 @@
 #include <map>
 #include <string>
 #include <utility>
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/select.h>
@@ -34,10 +35,16 @@ struct ClientState
 class Server
 {
 public:
-  Server(int port, std::string role) : port_(port), role_(std::move(role)) {}
+  Server(int port, std::string role, std::string master_host, int master_port)
+      : port_(port), role_(std::move(role)), master_host_(std::move(master_host)), master_port_(master_port) {}
 
   void run()
   {
+    if (role_ == "slave" && !master_host_.empty())
+    {
+      connect_to_master_and_ping();
+    }
+
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0)
     {
@@ -661,6 +668,41 @@ private:
   std::string role_;
   std::string replid_ = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
   long long repl_offset_ = 0;
+  std::string master_host_;
+  int master_port_{0};
+  int master_fd_{-1};
+
+  void connect_to_master_and_ping()
+  {
+    master_fd_ = socket(AF_INET, SOCK_STREAM, 0);
+    if (master_fd_ < 0)
+    {
+      std::cerr << "Failed to create master socket\n";
+      return;
+    }
+
+    sockaddr_in master_addr{};
+    master_addr.sin_family = AF_INET;
+    master_addr.sin_port = htons(master_port_);
+    if (inet_pton(AF_INET, master_host_.c_str(), &master_addr.sin_addr) <= 0)
+    {
+      std::cerr << "Invalid master address\n";
+      close(master_fd_);
+      master_fd_ = -1;
+      return;
+    }
+
+    if (connect(master_fd_, reinterpret_cast<sockaddr *>(&master_addr), sizeof(master_addr)) < 0)
+    {
+      std::cerr << "Failed to connect to master\n";
+      close(master_fd_);
+      master_fd_ = -1;
+      return;
+    }
+
+    const std::string ping = "*1\r\n$4\r\nPING\r\n";
+    send(master_fd_, ping.data(), ping.size(), 0);
+  }
 };
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv)
@@ -697,7 +739,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv)
         role = "slave";
     }
   }
-  Server server(port, role);
+  Server server(port, role, replica_host, replica_port);
   server.run();
   return 0;
 }
