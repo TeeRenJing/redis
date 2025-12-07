@@ -37,6 +37,7 @@ constexpr const char *CMD_MULTI = "MULTI";
 constexpr const char *CMD_EXEC = "EXEC";
 constexpr const char *CMD_DISCARD = "DISCARD";
 constexpr const char *CMD_TYPE = "TYPE";
+constexpr const char *CMD_INFO = "INFO";
 constexpr const char *CMD_XADD = "XADD";
 constexpr const char *CMD_XRANGE = "XRANGE";
 constexpr const char *CMD_XREAD = "XREAD";
@@ -61,6 +62,8 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Stor
 void handle_incr(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                  const ResponseSender &respond = ResponseSender{});
 void handle_type(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
+                 const ResponseSender &respond = ResponseSender{});
+void handle_info(int client_fd, const std::vector<std::string_view> &parts,
                  const ResponseSender &respond = ResponseSender{});
 void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                  const ResponseSender &respond = ResponseSender{});

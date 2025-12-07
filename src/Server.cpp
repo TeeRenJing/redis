@@ -622,6 +622,8 @@ private:
       handle_incr(client.fd, parts, kv_store_, respond);
     else if (cmd == CMD_TYPE)
       handle_type(client.fd, parts, kv_store_, respond);
+    else if (cmd == CMD_INFO)
+      handle_info(client.fd, parts, respond);
     else if (cmd == CMD_XADD)
     {
       handle_xadd(client.fd, parts, kv_store_, respond);

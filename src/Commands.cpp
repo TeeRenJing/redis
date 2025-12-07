@@ -13,6 +13,7 @@
 #include <iostream>
 #include <limits>
 #include <utility>
+#include <cctype>
 
 // ============================
 // SEND HELPER
@@ -471,6 +472,26 @@ void handle_type(int client_fd, const std::vector<std::string_view> &args, Store
         type_str = "none";
 
     send_response(respond, client_fd, ("+" + type_str + "\r\n").c_str());
+}
+
+// ============================
+// INFO (replication only)
+// ============================
+void handle_info(int client_fd, const std::vector<std::string_view> &args, const ResponseSender &respond)
+{
+    std::string section;
+    if (args.size() >= 2)
+    {
+        section.assign(args[1]);
+        std::transform(section.begin(), section.end(), section.begin(),
+                       [](unsigned char c)
+                       { return static_cast<char>(std::tolower(c)); });
+    }
+
+    // For now, always return replication details with role=master.
+    const std::string payload = "# Replication\r\nrole:master\r\n";
+    std::string resp = "$" + std::to_string(payload.size()) + "\r\n" + payload + "\r\n";
+    send_response(respond, client_fd, resp);
 }
 
 // ============================
