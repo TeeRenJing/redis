@@ -478,6 +478,7 @@ void handle_type(int client_fd, const std::vector<std::string_view> &args, Store
 // INFO (replication only)
 // ============================
 void handle_info(int client_fd, const std::vector<std::string_view> &args, std::string_view role,
+                 std::string_view replid, long long repl_offset,
                  const ResponseSender &respond)
 {
     std::string section;
@@ -489,9 +490,13 @@ void handle_info(int client_fd, const std::vector<std::string_view> &args, std::
                        { return static_cast<char>(std::tolower(c)); });
     }
 
-    // For now, always return replication details with role derived from startup args.
+    // For now, always return replication details with role/id/offset derived from startup args.
     std::string payload = "# Replication\r\nrole:";
     payload.append(role);
+    payload.append("\r\nmaster_replid:");
+    payload.append(replid);
+    payload.append("\r\nmaster_repl_offset:");
+    payload.append(std::to_string(repl_offset));
     payload.append("\r\n");
     std::string resp = "$" + std::to_string(payload.size()) + "\r\n" + payload + "\r\n";
     send_response(respond, client_fd, resp);

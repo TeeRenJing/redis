@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <sys/select.h>
 #include <queue>
+#include <random>
 
 struct ClientState
 {
@@ -625,7 +626,7 @@ private:
     else if (cmd == CMD_TYPE)
       handle_type(client.fd, parts, kv_store_, respond);
     else if (cmd == CMD_INFO)
-      handle_info(client.fd, parts, role_, respond);
+      handle_info(client.fd, parts, role_, replid_, repl_offset_, respond);
     else if (cmd == CMD_XADD)
     {
       handle_xadd(client.fd, parts, kv_store_, respond);
@@ -658,6 +659,8 @@ private:
   Store kv_store_;
   BlockingManager blocking_manager_;
   std::string role_;
+  std::string replid_ = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+  long long repl_offset_ = 0;
 };
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv)
