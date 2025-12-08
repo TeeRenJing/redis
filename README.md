@@ -48,6 +48,16 @@ Start a replica by pointing it at a master host/port:
 ./your_program.sh --port 6380 --replicaof "localhost 6379"
 ```
 
+# Running tests
+
+Build and run the unit tests (CMake/CTest):
+
+```sh
+cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
+cmake --build build
+ctest --test-dir build
+```
+
 # Architecture overview
 
 - `src/Server.cpp` boots a non-blocking TCP server on port 6379, keeps per-client state (socket, read buffer, pending responses, transaction queue), and runs a `select`-based event loop that accepts clients, reads RESP frames, queues writes, and integrates the `BlockingManager` for list/stream blocking. `MULTI`/`EXEC` queuing lives here, and responses are pushed to per-client queues before being flushed.

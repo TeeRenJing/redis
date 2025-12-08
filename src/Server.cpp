@@ -4,6 +4,7 @@
 #include "Store.hpp"
 #include "BlockingCommands.hpp"
 #include "BlockingManager.hpp"
+#include "Replication.hpp"
 #include <iostream>
 #include <array>
 #include <sys/socket.h>
@@ -705,8 +706,13 @@ private:
       return;
     }
 
-    const std::string ping = "*1\r\n$4\r\nPING\r\n";
+    const std::string ping = build_ping_command();
+    const std::string replconf_port = build_replconf_listening_port(port_);
+    const std::string replconf_capa = build_replconf_capa_psync2();
+
     send(master_fd_, ping.data(), ping.size(), 0);
+    send(master_fd_, replconf_port.data(), replconf_port.size(), 0);
+    send(master_fd_, replconf_capa.data(), replconf_capa.size(), 0);
   }
 };
 

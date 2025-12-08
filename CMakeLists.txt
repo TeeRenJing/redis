@@ -12,6 +12,12 @@ find_package(Threads REQUIRED)
 add_executable(server ${SOURCE_FILES})
 target_link_libraries(server PRIVATE Threads::Threads)
 
+# Tests
+enable_testing()
+add_executable(replication_tests tests/ReplicationTest.cpp src/Replication.cpp)
+target_include_directories(replication_tests PRIVATE src)
+add_test(NAME replication_tests COMMAND replication_tests)
+
 # --- Warnings (per target) ---
 if (MSVC)
   target_compile_options(server PRIVATE /W4)
