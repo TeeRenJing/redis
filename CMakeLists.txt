@@ -18,6 +18,17 @@ add_executable(replication_tests tests/ReplicationTest.cpp src/Replication.cpp)
 target_include_directories(replication_tests PRIVATE src)
 add_test(NAME replication_tests COMMAND replication_tests)
 
+add_executable(list_commands_tests
+  tests/ListCommandsTest.cpp
+  src/Commands.cpp
+  src/RESP.cpp
+  src/BlockingManager.cpp
+  src/Replication.cpp
+)
+target_include_directories(list_commands_tests PRIVATE src)
+target_link_libraries(list_commands_tests PRIVATE Threads::Threads)
+add_test(NAME list_commands_tests COMMAND list_commands_tests)
+
 # --- Warnings (per target) ---
 if (MSVC)
   target_compile_options(server PRIVATE /W4)

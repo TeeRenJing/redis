@@ -178,9 +178,9 @@ bool BlockingManager::try_unblock_clients_for_key(
         return try_unblock_clients_for_key(key, kv_store, send_callback);
     }
 
-    // Pop element from list (front of vector = O(n) removal)
+    // Pop element from list
     std::string element = std::move(list_value->values.front());
-    list_value->values.erase(list_value->values.begin());
+    list_value->values.pop_front();
 
     if (list_value->values.empty())
         kv_store.erase(store_it);

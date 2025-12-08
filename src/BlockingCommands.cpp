@@ -64,9 +64,9 @@ void handle_blpop(int client_fd, const std::vector<std::string_view> &parts, Sto
             {
                 std::cout << "[BLPOP LOG] Client " << client_fd << " - IMMEDIATE POP: Element available!" << std::endl;
 
-                // Pop element from front (O(n) for vector; could use deque for better performance)
+                // Pop element from front
                 std::string element = std::move(lval->values.front());
-                lval->values.erase(lval->values.begin());
+                lval->values.pop_front();
 
                 std::cout << "[BLPOP LOG] Client " << client_fd << " - Popped element: '" << element << "'" << std::endl;
 

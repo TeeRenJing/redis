@@ -169,7 +169,7 @@ void handle_lpush(int client_fd, const std::vector<std::string_view> &args, Stor
     // Push left (front) in order
     for (size_t i = 2; i < args.size(); ++i)
     {
-        list_ptr->values.insert(list_ptr->values.begin(), std::string(args[i]));
+        list_ptr->values.push_front(std::string(args[i]));
     }
 
     std::string resp = ":" + std::to_string(list_ptr->values.size()) + "\r\n";
@@ -301,7 +301,7 @@ void handle_lpop(int client_fd, const std::vector<std::string_view> &args, Store
     if (args.size() <= 2)
     {
         resp = "$" + std::to_string(list_val->values.front().size()) + "\r\n" + list_val->values.front() + "\r\n";
-        list_val->values.erase(list_val->values.begin());
+        list_val->values.pop_front();
     }
     else
     {

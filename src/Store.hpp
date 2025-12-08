@@ -3,6 +3,7 @@
 #include <chrono>
 #include <unordered_map>
 #include <vector>
+#include <deque>
 #include <memory>
 
 struct ValueBase
@@ -30,7 +31,7 @@ struct StringValue : public ValueBase
 struct ListValue : public ValueBase
 {
     // Redis list semantics (push/pop from ends).
-    std::vector<std::string> values;
+    std::deque<std::string> values;
 };
 
 struct StreamEntry
