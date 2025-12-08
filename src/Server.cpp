@@ -710,7 +710,11 @@ private:
     const std::string replconf_port = build_replconf_listening_port(port_);
     const std::string replconf_capa = build_replconf_capa_psync2();
 
+    // Send initial PING and wait for the master's reply before continuing the handshake.
     send(master_fd_, ping.data(), ping.size(), 0);
+    char pong_buf[128];
+    recv(master_fd_, pong_buf, sizeof(pong_buf), 0); // best-effort read; ignore content for now
+
     send(master_fd_, replconf_port.data(), replconf_port.size(), 0);
     send(master_fd_, replconf_capa.data(), replconf_capa.size(), 0);
   }
