@@ -725,7 +725,13 @@ private:
     recv(master_fd_, pong_buf, sizeof(pong_buf), 0); // best-effort read; ignore content for now
 
     send(master_fd_, replconf_port.data(), replconf_port.size(), 0);
+    char ok_buf1[128];
+    recv(master_fd_, ok_buf1, sizeof(ok_buf1), 0); // ignore content
+
     send(master_fd_, replconf_capa.data(), replconf_capa.size(), 0);
+    char ok_buf2[128];
+    recv(master_fd_, ok_buf2, sizeof(ok_buf2), 0); // ignore content
+
     send(master_fd_, psync.data(), psync.size(), 0);
   }
 };
