@@ -22,6 +22,14 @@
 #include <sys/select.h>
 #include <queue>
 #include <random>
+#include <string_view>
+
+namespace
+{
+  constexpr std::string_view kDefaultRoleMaster = "master";
+  constexpr std::string_view kDefaultRoleSlave = "slave";
+  constexpr std::string_view kDefaultReplId = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+}
 
 struct ClientState
 {
@@ -667,7 +675,7 @@ private:
   Store kv_store_;
   BlockingManager blocking_manager_;
   std::string role_;
-  std::string replid_ = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+  std::string replid_ = std::string(kDefaultReplId);
   long long repl_offset_ = 0;
   std::string master_host_;
   int master_port_{0};
@@ -709,6 +717,7 @@ private:
     const std::string ping = build_ping_command();
     const std::string replconf_port = build_replconf_listening_port(port_);
     const std::string replconf_capa = build_replconf_capa_psync2();
+    const std::string psync = build_psync_fullresync();
 
     // Send initial PING and wait for the master's reply before continuing the handshake.
     send(master_fd_, ping.data(), ping.size(), 0);
@@ -717,15 +726,16 @@ private:
 
     send(master_fd_, replconf_port.data(), replconf_port.size(), 0);
     send(master_fd_, replconf_capa.data(), replconf_capa.size(), 0);
+    send(master_fd_, psync.data(), psync.size(), 0);
   }
 };
 
-int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv)
+int main(int argc, char **argv)
 {
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
   int port = 6379;
-  std::string role = "master";
+  std::string role = std::string(kDefaultRoleMaster);
   std::string replica_host;
   int replica_port = 0;
   for (int i = 1; i < argc; ++i)
@@ -751,7 +761,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv)
       }
 
       if (!replica_host.empty())
-        role = "slave";
+        role = std::string(kDefaultRoleSlave);
     }
   }
   Server server(port, role, replica_host, replica_port);

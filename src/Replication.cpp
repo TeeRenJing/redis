@@ -26,3 +26,9 @@ std::string build_replconf_capa_psync2()
 {
     return build_resp_array({"REPLCONF", "capa", "psync2"});
 }
+
+std::string build_psync_fullresync()
+{
+    // PSYNC ? -1
+    return build_resp_array({"PSYNC", "?", "-1"});
+}
