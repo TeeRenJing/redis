@@ -503,6 +503,16 @@ void handle_info(int client_fd, const std::vector<std::string_view> &args, std::
 }
 
 // ============================
+// REPLCONF (simple ACK)
+// ============================
+void handle_replconf(int client_fd, const std::vector<std::string_view> &args,
+                     const ResponseSender &respond)
+{
+    (void)args; // ignore for now
+    send_response(respond, client_fd, RESP_OK);
+}
+
+// ============================
 // XADD
 // ============================
 void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,

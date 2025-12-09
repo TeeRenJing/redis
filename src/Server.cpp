@@ -643,6 +643,8 @@ private:
       handle_type(client.fd, parts, kv_store_, respond);
     else if (cmd == CMD_INFO)
       handle_info(client.fd, parts, role_, replid_, repl_offset_, respond);
+    else if (cmd == CMD_REPLCONF)
+      handle_replconf(client.fd, parts, respond);
     else if (cmd == CMD_XADD)
     {
       handle_xadd(client.fd, parts, kv_store_, respond);
