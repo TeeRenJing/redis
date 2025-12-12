@@ -1,5 +1,6 @@
 #include "Commands.hpp"
 #include "BlockingManager.hpp"
+#include "Replication.hpp"
 #include <sys/socket.h>
 #include <unordered_map>
 #include <string>
@@ -518,13 +519,23 @@ void handle_replconf(int client_fd, const std::vector<std::string_view> &args,
 void handle_psync(int client_fd, std::string_view replid, long long repl_offset,
                   const ResponseSender &respond)
 {
-    // Always initiate a full resynchronization for now.
-    std::string resp = "+FULLRESYNC ";
-    resp.append(replid);
-    resp.push_back(' ');
-    resp.append(std::to_string(repl_offset));
-    resp.append("\r\n");
-    send_response(respond, client_fd, resp);
+    (void)repl_offset; // We always start from 0 for now.
+
+    // Tell the replica we're doing a full resynchronization from offset 0.
+    std::string fullresync = "+FULLRESYNC ";
+    fullresync.append(replid);
+    fullresync.append(" 0\r\n");
+    send_response(respond, client_fd, fullresync);
+
+    // Immediately stream the snapshot as a bulk payload (no trailing CRLF after the binary).
+    const auto &rdb = get_empty_rdb_payload();
+    std::string bulk;
+    bulk.reserve(rdb.size() + 32);
+    bulk.push_back('$');
+    bulk.append(std::to_string(rdb.size()));
+    bulk.append("\r\n");
+    bulk.append(rdb);
+    send_response(respond, client_fd, bulk);
 }
 
 // ============================
