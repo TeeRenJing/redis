@@ -513,6 +513,21 @@ void handle_replconf(int client_fd, const std::vector<std::string_view> &args,
 }
 
 // ============================
+// PSYNC
+// ============================
+void handle_psync(int client_fd, std::string_view replid, long long repl_offset,
+                  const ResponseSender &respond)
+{
+    // Always initiate a full resynchronization for now.
+    std::string resp = "+FULLRESYNC ";
+    resp.append(replid);
+    resp.push_back(' ');
+    resp.append(std::to_string(repl_offset));
+    resp.append("\r\n");
+    send_response(respond, client_fd, resp);
+}
+
+// ============================
 // XADD
 // ============================
 void handle_xadd(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,

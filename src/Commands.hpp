@@ -42,6 +42,7 @@ constexpr const char *CMD_XADD = "XADD";
 constexpr const char *CMD_XRANGE = "XRANGE";
 constexpr const char *CMD_XREAD = "XREAD";
 constexpr const char *CMD_REPLCONF = "REPLCONF";
+constexpr const char *CMD_PSYNC = "PSYNC";
 
 // Command Handlers
 void handle_ping(int client_fd, const ResponseSender &respond = ResponseSender{});
@@ -69,9 +70,11 @@ void handle_info(int client_fd, const std::vector<std::string_view> &parts, std:
                  const ResponseSender &respond = ResponseSender{});
 void handle_replconf(int client_fd, const std::vector<std::string_view> &parts,
                      const ResponseSender &respond = ResponseSender{});
+void handle_psync(int client_fd, std::string_view replid, long long repl_offset,
+                  const ResponseSender &respond = ResponseSender{});
 void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                  const ResponseSender &respond = ResponseSender{});
 void handle_xrange(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
-                   const ResponseSender &respond = ResponseSender{});
+                  const ResponseSender &respond = ResponseSender{});
 void handle_xread(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                   BlockingManager &blocking_manager, const ResponseSender &respond = ResponseSender{});
