@@ -31,7 +31,7 @@ int main()
     std::string captured;
     ResponseSender capture_sender = [&captured](int, std::string_view resp)
     { captured.assign(resp); };
-    handle_replconf(1, args, capture_sender);
+    handle_replconf(1, args, 0, capture_sender);
     const std::string expected_ack = "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n";
     assert(captured == expected_ack);
 

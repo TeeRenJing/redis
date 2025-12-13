@@ -506,7 +506,7 @@ void handle_info(int client_fd, const std::vector<std::string_view> &args, std::
 // ============================
 // REPLCONF (simple ACK)
 // ============================
-void handle_replconf(int client_fd, const std::vector<std::string_view> &args,
+void handle_replconf(int client_fd, const std::vector<std::string_view> &args, long long replica_offset,
                      const ResponseSender &respond)
 {
     if (args.size() >= 3)
@@ -516,9 +516,7 @@ void handle_replconf(int client_fd, const std::vector<std::string_view> &args,
         if (subcmd == "GETACK")
         {
             // RESP array: ["REPLCONF", "ACK", "<offset>"], offset hardcoded to 0 for now.
-            std::cout << "Received REPLCONF GETACK from replica\n"
-                      << std::endl;
-            std::string ack = build_resp_array({"REPLCONF", "ACK", "0"});
+            std::string ack = build_resp_array({"REPLCONF", "ACK", std::to_string(replica_offset)});
             send_response(respond, client_fd, ack);
             return;
         }

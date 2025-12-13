@@ -68,7 +68,7 @@ void handle_type(int client_fd, const std::vector<std::string_view> &parts, Stor
 void handle_info(int client_fd, const std::vector<std::string_view> &parts, std::string_view role,
                  std::string_view replid, long long repl_offset,
                  const ResponseSender &respond = ResponseSender{});
-void handle_replconf(int client_fd, const std::vector<std::string_view> &parts,
+void handle_replconf(int client_fd, const std::vector<std::string_view> &parts, long long replica_offset,
                      const ResponseSender &respond = ResponseSender{});
 void handle_psync(int client_fd, std::string_view replid, long long repl_offset,
                   const ResponseSender &respond = ResponseSender{});

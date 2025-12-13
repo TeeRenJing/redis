@@ -274,14 +274,14 @@ private:
 
     master_buffer_.append(scratch_buffer.data(), bytes_received);
 
-    // Process commands from master without sending any responses back (except handshake).
+    // Process commands from master without sending any responses back (except handshake/GETACK).
     auto master_responder = [this](int, std::string_view resp)
     {
       if (master_client_state_.suppress_responses)
         return;
       ::send(master_fd_, resp.data(), resp.size(), 0);
     };
-    return process_buffer(master_client_state_, master_buffer_, master_responder, true);
+    return process_buffer(master_client_state_, master_buffer_, master_responder, true, &master_processed_bytes_);
   }
 
   bool send_pending_responses(ClientState &client)
@@ -322,9 +322,10 @@ private:
 
   bool process_client_buffer(ClientState &client)
   {
-    return process_buffer(client, client.buffer, ResponseSender{}, false);
+    return process_buffer(client, client.buffer, ResponseSender{}, false, nullptr);
   }
-  bool process_buffer(ClientState &client, std::string &buffer, const ResponseSender &respond_override, bool ignore_bulk_frame)
+  bool process_buffer(ClientState &client, std::string &buffer, const ResponseSender &respond_override, bool ignore_bulk_frame,
+                      long long *offset_counter)
   {
     size_t pos = 0;
 
@@ -334,8 +335,9 @@ private:
       if (end_pos == std::string::npos)
         break; // need more bytes
 
+      size_t frame_len = end_pos - pos;
       // Build a view over the complete frame [pos, end_pos)
-      std::string_view frame(buffer.data() + pos, end_pos - pos);
+      std::string_view frame(buffer.data() + pos, frame_len);
 
       // For replication snapshot bulk payloads, consume without executing commands.
       if (ignore_bulk_frame && frame.size() > 0 && frame[0] == '$')
@@ -345,6 +347,11 @@ private:
       else
       {
         execute_command(client, frame, respond_override); // your existing executor
+      }
+
+      if (offset_counter && !(ignore_bulk_frame && frame.size() > 0 && frame[0] == '$'))
+      {
+        *offset_counter += static_cast<long long>(frame_len);
       }
 
       pos = end_pos; // advance to next frame
@@ -804,7 +811,10 @@ private:
     else if (cmd == CMD_INFO)
       handle_info(client.fd, parts, role_, replid_, repl_offset_, respond);
     else if (cmd == CMD_REPLCONF)
-      handle_replconf(client.fd, parts, respond);
+    {
+      long long repl_ack_offset = (&client == &master_client_state_) ? master_processed_bytes_ : repl_offset_;
+      handle_replconf(client.fd, parts, repl_ack_offset, respond);
+    }
     else if (cmd == CMD_PSYNC)
     {
       client.is_replica = true; // Mark this link as a replica connection.
@@ -849,6 +859,7 @@ private:
   int master_fd_{-1};
   ClientState master_client_state_;
   std::string master_buffer_;
+  long long master_processed_bytes_{0};
 
   void connect_to_master_and_ping()
   {
