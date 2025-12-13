@@ -527,7 +527,18 @@ private:
                              [](char c)
                              { return c == '\n' || c == '\r'; }),
               cmd.end());
-    bool allow_response_for_replica = !client.suppress_responses || is_replica_handshake_command(cmd);
+    auto is_getack = [&parts]()
+    {
+      if (parts.size() >= 3)
+      {
+        std::string subcmd(parts[1]);
+        std::transform(subcmd.begin(), subcmd.end(), subcmd.begin(), ::toupper);
+        return subcmd == "GETACK";
+      }
+      return false;
+    };
+
+    bool allow_response_for_replica = !client.suppress_responses || is_getack();
     ResponseSender effective_respond = allow_response_for_replica ? respond : ResponseSender{};
     allow_response = allow_response_for_replica;
 
@@ -697,11 +708,6 @@ private:
   {
     return cmd == CMD_SET || cmd == CMD_LPUSH || cmd == CMD_RPUSH || cmd == CMD_LPOP ||
            cmd == CMD_INCR || cmd == CMD_XADD;
-  }
-
-  bool is_replica_handshake_command(const std::string &cmd) const
-  {
-    return cmd == CMD_PING || cmd == CMD_REPLCONF;
   }
 
   void propagate_to_replicas(const std::string &raw_request, int origin_fd)
