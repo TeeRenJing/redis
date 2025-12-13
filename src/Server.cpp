@@ -40,6 +40,7 @@ struct ClientState
   bool in_transaction = false;                      // true while between MULTI/EXEC
   std::vector<std::vector<std::string>> queued_commands{}; // commands staged during MULTI
   bool is_replica = false;                          // true if this connection is a replica link
+  bool suppress_responses = false;                  // when true, do not send/queue responses
 };
 
 class Server
@@ -53,6 +54,8 @@ public:
     if (role_ == "slave" && !master_host_.empty())
     {
       connect_to_master_and_ping();
+      master_client_state_.fd = master_fd_;
+      master_client_state_.suppress_responses = true; // replicas must not reply to master
     }
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -99,6 +102,11 @@ public:
       FD_SET(server_fd, &read_fds);
 
       int max_fd = server_fd;
+      if (master_fd_ >= 0)
+      {
+        FD_SET(master_fd_, &read_fds);
+        max_fd = std::max(max_fd, master_fd_);
+      }
 
       // Add all client sockets to the read set
       // Add clients with pending responses to write set
@@ -170,6 +178,16 @@ public:
         }
       }
 
+      // Handle replication stream from master (when we are a replica).
+      if (master_fd_ >= 0 && FD_ISSET(master_fd_, &read_fds))
+      {
+        if (!handle_master_data())
+        {
+          close(master_fd_);
+          master_fd_ = -1;
+        }
+      }
+
       // Check blocking operations for completion (timeouts)
       auto send_callback = [this](int client_fd, const std::string &response)
       {
@@ -235,6 +253,36 @@ private:
     return process_client_buffer(client);
   }
 
+  bool handle_master_data()
+  {
+    if (master_fd_ < 0)
+      return false;
+
+    std::array<char, 4096> scratch_buffer{};
+    ssize_t bytes_received = recv(master_fd_, scratch_buffer.data(), scratch_buffer.size(), 0);
+
+    if (bytes_received <= 0)
+    {
+      if (bytes_received == 0 || (errno != EWOULDBLOCK && errno != EAGAIN))
+      {
+        std::cout << "Master connection closed\n";
+        return false;
+      }
+      return true;
+    }
+
+    master_buffer_.append(scratch_buffer.data(), bytes_received);
+
+    // Process commands from master without sending any responses back.
+    auto master_responder = [this](int, std::string_view resp)
+    {
+      if (master_client_state_.suppress_responses)
+        return;
+      ::send(master_fd_, resp.data(), resp.size(), 0);
+    };
+    return process_buffer(master_client_state_, master_buffer_, master_responder);
+  }
+
   bool send_pending_responses(ClientState &client)
   {
     while (!client.pending_responses.empty())
@@ -273,27 +321,31 @@ private:
 
   bool process_client_buffer(ClientState &client)
   {
+    return process_buffer(client, client.buffer, ResponseSender{});
+  }
+  bool process_buffer(ClientState &client, std::string &buffer, const ResponseSender &respond_override)
+  {
     size_t pos = 0;
 
     while (true)
     {
-      size_t end_pos = find_complete_command(client.buffer, pos);
+      size_t end_pos = find_complete_command(buffer, pos);
       if (end_pos == std::string::npos)
         break; // need more bytes
 
       // Build a view over the complete frame [pos, end_pos)
-      std::string_view frame(client.buffer.data() + pos, end_pos - pos);
+      std::string_view frame(buffer.data() + pos, end_pos - pos);
 
-      execute_command(client, frame); // your existing executor
+      execute_command(client, frame, respond_override); // your existing executor
 
       pos = end_pos; // advance to next frame
-      if (pos >= client.buffer.size())
+      if (pos >= buffer.size())
         break;
     }
 
     // Drop consumed bytes in one go
     if (pos > 0)
-      client.buffer.erase(0, pos);
+      buffer.erase(0, pos);
 
     return true;
   }
@@ -378,7 +430,7 @@ private:
     return pos;
   }
 
-  void execute_command(ClientState &client, std::string_view request)
+  void execute_command(ClientState &client, std::string_view request, const ResponseSender &respond_override = ResponseSender{})
   {
     // Skip if client is currently blocked
     if (blocking_manager_.is_client_blocked(client.fd))
@@ -391,12 +443,25 @@ private:
     {
       if (auto it = clients_.find(target_fd); it != clients_.end())
       {
-        it->second.pending_responses.emplace(resp);
+        if (!it->second.suppress_responses)
+          it->second.pending_responses.emplace(resp);
       }
       else
       {
         ::send(target_fd, resp.data(), resp.size(), 0);
       }
+    };
+    const ResponseSender &respond = respond_override ? respond_override : default_sender;
+    bool allow_response = !client.suppress_responses;
+    auto enqueue_response = [&client, &allow_response](const std::string &resp)
+    {
+      if (allow_response)
+        client.pending_responses.emplace(resp);
+    };
+    auto enqueue_response_cstr = [&client, &allow_response](const char *resp)
+    {
+      if (allow_response)
+        client.pending_responses.emplace(resp);
     };
 
     auto parts = parse_resp(request);
@@ -406,7 +471,7 @@ private:
       auto end = request.find_last_not_of(" \r\n");
       if (start == std::string_view::npos || end == std::string_view::npos)
       {
-        handle_ping(client.fd, default_sender);
+        handle_ping(client.fd, respond);
         return;
       }
       std::string_view trimmed = request.substr(start, end - start + 1);
@@ -418,7 +483,7 @@ private:
 
     if (parts.empty())
     {
-      handle_ping(client.fd, default_sender);
+      handle_ping(client.fd, respond);
       return;
     }
 
@@ -428,18 +493,21 @@ private:
                              [](char c)
                              { return c == '\n' || c == '\r'; }),
               cmd.end());
+    bool allow_response_for_replica = !client.suppress_responses || is_replica_handshake_command(cmd);
+    ResponseSender effective_respond = allow_response_for_replica ? respond : ResponseSender{};
+    allow_response = allow_response_for_replica;
 
     if (cmd == CMD_MULTI)
     {
       if (client.in_transaction)
       {
-        client.pending_responses.emplace("-ERR MULTI calls cannot be nested\r\n");
+        enqueue_response_cstr("-ERR MULTI calls cannot be nested\r\n");
       }
       else
       {
         client.in_transaction = true;
         client.queued_commands.clear();
-        client.pending_responses.emplace(RESP_OK);
+        enqueue_response_cstr(RESP_OK);
       }
       return;
     }
@@ -448,13 +516,13 @@ private:
     {
       if (!client.in_transaction)
       {
-        client.pending_responses.emplace("-ERR DISCARD without MULTI\r\n");
+        enqueue_response_cstr("-ERR DISCARD without MULTI\r\n");
         return;
       }
 
       client.in_transaction = false;
       client.queued_commands.clear();
-      client.pending_responses.emplace(RESP_OK);
+      enqueue_response_cstr(RESP_OK);
       return;
     }
 
@@ -462,7 +530,7 @@ private:
     {
       if (!client.in_transaction)
       {
-        client.pending_responses.emplace("-ERR EXEC without MULTI\r\n");
+        enqueue_response_cstr("-ERR EXEC without MULTI\r\n");
         return;
       }
 
@@ -500,7 +568,7 @@ private:
       {
         response += entry;
       }
-      client.pending_responses.push(std::move(response));
+      enqueue_response(response);
       return;
     }
 
@@ -513,13 +581,13 @@ private:
         stored.emplace_back(parts[i]);
 
       client.queued_commands.push_back(std::move(stored));
-      client.pending_responses.emplace(RESP_QUEUED);
+      enqueue_response_cstr(RESP_QUEUED);
       return;
     }
 
     bool should_replicate = role_ == kDefaultRoleMaster && !client.is_replica && is_replicated_command(cmd);
 
-    dispatch_command(client, cmd, parts, default_sender);
+    dispatch_command(client, cmd, parts, effective_respond);
 
     // Propagate write commands to all connected replicas over their replication links.
     if (should_replicate)
@@ -595,6 +663,11 @@ private:
   {
     return cmd == CMD_SET || cmd == CMD_LPUSH || cmd == CMD_RPUSH || cmd == CMD_LPOP ||
            cmd == CMD_INCR || cmd == CMD_XADD;
+  }
+
+  bool is_replica_handshake_command(const std::string &cmd) const
+  {
+    return cmd == CMD_PING || cmd == CMD_REPLCONF;
   }
 
   void propagate_to_replicas(const std::string &raw_request, int origin_fd)
@@ -714,6 +787,8 @@ private:
   std::string master_host_;
   int master_port_{0};
   int master_fd_{-1};
+  ClientState master_client_state_;
+  std::string master_buffer_;
 
   void connect_to_master_and_ping()
   {
@@ -753,20 +828,45 @@ private:
     const std::string replconf_capa = build_replconf_capa_psync2();
     const std::string psync = build_psync_fullresync();
 
+    auto recv_simple = [this](std::string &out_buf)
+    {
+      out_buf.clear();
+      char tmp[128];
+      while (true)
+      {
+        ssize_t n = recv(master_fd_, tmp, sizeof(tmp), 0);
+        if (n <= 0)
+          return false;
+        out_buf.append(tmp, static_cast<size_t>(n));
+        if (out_buf.find("\r\n") != std::string::npos)
+          return true;
+      }
+    };
+
     // Send initial PING and wait for the master's reply before continuing the handshake.
     send(master_fd_, ping.data(), ping.size(), 0);
-    char pong_buf[128];
-    recv(master_fd_, pong_buf, sizeof(pong_buf), 0); // best-effort read; ignore content for now
+    std::string pong_buf;
+    if (!recv_simple(pong_buf))
+    {
+      std::cerr << "Failed to receive PONG from master\n";
+      close(master_fd_);
+      master_fd_ = -1;
+      return;
+    }
 
     send(master_fd_, replconf_port.data(), replconf_port.size(), 0);
-    char ok_buf1[128];
-    recv(master_fd_, ok_buf1, sizeof(ok_buf1), 0); // ignore content
+    std::string ok_buf1;
+    recv_simple(ok_buf1); // ignore content
 
     send(master_fd_, replconf_capa.data(), replconf_capa.size(), 0);
-    char ok_buf2[128];
-    recv(master_fd_, ok_buf2, sizeof(ok_buf2), 0); // ignore content
+    std::string ok_buf2;
+    recv_simple(ok_buf2); // ignore content
 
     send(master_fd_, psync.data(), psync.size(), 0);
+
+    // Switch to non-blocking after the handshake.
+    int flags = fcntl(master_fd_, F_GETFL, 0);
+    fcntl(master_fd_, F_SETFL, flags | O_NONBLOCK);
   }
 };
 
