@@ -39,6 +39,7 @@ struct ClientState
   std::queue<std::string> pending_responses{};      // outbound RESP replies waiting to be written
   bool in_transaction = false;                      // true while between MULTI/EXEC
   std::vector<std::vector<std::string>> queued_commands{}; // commands staged during MULTI
+  bool is_replica = false;                          // true if this connection is a replica link
 };
 
 class Server
@@ -516,7 +517,15 @@ private:
       return;
     }
 
+    bool should_replicate = role_ == kDefaultRoleMaster && !client.is_replica && is_replicated_command(cmd);
+
     dispatch_command(client, cmd, parts, default_sender);
+
+    // Propagate write commands to all connected replicas over their replication links.
+    if (should_replicate)
+    {
+      propagate_to_replicas(std::string(request), client.fd);
+    }
   }
 
   void handle_blocking_command(ClientState &client, const std::string &cmd, const std::vector<std::string_view> &parts)
@@ -580,6 +589,24 @@ private:
       }
     }
     return false;
+  }
+
+  bool is_replicated_command(const std::string &cmd) const
+  {
+    return cmd == CMD_SET || cmd == CMD_LPUSH || cmd == CMD_RPUSH || cmd == CMD_LPOP ||
+           cmd == CMD_INCR || cmd == CMD_XADD;
+  }
+
+  void propagate_to_replicas(const std::string &raw_request, int origin_fd)
+  {
+    for (auto &[fd, replica] : clients_)
+    {
+      if (fd == origin_fd)
+        continue;
+      if (!replica.is_replica)
+        continue;
+      replica.pending_responses.push(raw_request);
+    }
   }
 
   void dispatch_command(ClientState &client, const std::string &cmd, const std::vector<std::string_view> &parts,
@@ -646,7 +673,10 @@ private:
     else if (cmd == CMD_REPLCONF)
       handle_replconf(client.fd, parts, respond);
     else if (cmd == CMD_PSYNC)
+    {
+      client.is_replica = true; // Mark this link as a replica connection.
       handle_psync(client.fd, replid_, repl_offset_, respond);
+    }
     else if (cmd == CMD_XADD)
     {
       handle_xadd(client.fd, parts, kv_store_, respond);
