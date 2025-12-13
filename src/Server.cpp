@@ -273,14 +273,14 @@ private:
 
     master_buffer_.append(scratch_buffer.data(), bytes_received);
 
-    // Process commands from master without sending any responses back.
+    // Process commands from master without sending any responses back (except handshake).
     auto master_responder = [this](int, std::string_view resp)
     {
       if (master_client_state_.suppress_responses)
         return;
       ::send(master_fd_, resp.data(), resp.size(), 0);
     };
-    return process_buffer(master_client_state_, master_buffer_, master_responder);
+    return process_buffer(master_client_state_, master_buffer_, master_responder, true);
   }
 
   bool send_pending_responses(ClientState &client)
@@ -321,9 +321,9 @@ private:
 
   bool process_client_buffer(ClientState &client)
   {
-    return process_buffer(client, client.buffer, ResponseSender{});
+    return process_buffer(client, client.buffer, ResponseSender{}, false);
   }
-  bool process_buffer(ClientState &client, std::string &buffer, const ResponseSender &respond_override)
+  bool process_buffer(ClientState &client, std::string &buffer, const ResponseSender &respond_override, bool ignore_bulk_frame)
   {
     size_t pos = 0;
 
@@ -336,7 +336,15 @@ private:
       // Build a view over the complete frame [pos, end_pos)
       std::string_view frame(buffer.data() + pos, end_pos - pos);
 
-      execute_command(client, frame, respond_override); // your existing executor
+      // For replication snapshot bulk payloads, consume without executing commands.
+      if (ignore_bulk_frame && frame.size() > 0 && frame[0] == '$')
+      {
+        // Do nothing: just advance past the bulk payload.
+      }
+      else
+      {
+        execute_command(client, frame, respond_override); // your existing executor
+      }
 
       pos = end_pos; // advance to next frame
       if (pos >= buffer.size())
@@ -354,6 +362,32 @@ private:
     if (start_pos >= buffer.size())
     {
       return std::string::npos;
+    }
+
+    // Top-level bulk strings (used for RDB payload during replication).
+    if (buffer[start_pos] == '$')
+    {
+      size_t len_crlf = buffer.find("\r\n", start_pos);
+      if (len_crlf == std::string::npos)
+        return std::string::npos;
+      int bulk_len = 0;
+      try
+      {
+        bulk_len = std::stoi(buffer.substr(start_pos + 1, len_crlf - start_pos - 1));
+      }
+      catch (...)
+      {
+        return std::string::npos;
+      }
+      size_t data_start = len_crlf + 2;
+      if (data_start + bulk_len > buffer.size())
+        return std::string::npos;
+
+      // Bulk payload may omit the trailing CRLF (as in RDB transfer). If present, include it.
+      size_t end_pos = data_start + bulk_len;
+      if (end_pos + 2 <= buffer.size() && buffer[end_pos] == '\r' && buffer[end_pos + 1] == '\n')
+        end_pos += 2;
+      return end_pos;
     }
 
     // Handle simple commands (not starting with *)
