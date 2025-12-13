@@ -516,6 +516,8 @@ void handle_replconf(int client_fd, const std::vector<std::string_view> &args,
         if (subcmd == "GETACK")
         {
             // RESP array: ["REPLCONF", "ACK", "<offset>"], offset hardcoded to 0 for now.
+            std::cout << "Received REPLCONF GETACK from replica\n"
+                      << std::endl;
             std::string ack = build_resp_array({"REPLCONF", "ACK", "0"});
             send_response(respond, client_fd, ack);
             return;
