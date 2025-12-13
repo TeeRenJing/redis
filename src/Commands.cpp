@@ -509,7 +509,20 @@ void handle_info(int client_fd, const std::vector<std::string_view> &args, std::
 void handle_replconf(int client_fd, const std::vector<std::string_view> &args,
                      const ResponseSender &respond)
 {
-    (void)args; // ignore for now
+    if (args.size() >= 3)
+    {
+        std::string subcmd(args[1]);
+        std::transform(subcmd.begin(), subcmd.end(), subcmd.begin(), ::toupper);
+        if (subcmd == "GETACK")
+        {
+            // RESP array: ["REPLCONF", "ACK", "<offset>"], offset hardcoded to 0 for now.
+            std::string ack = build_resp_array({"REPLCONF", "ACK", "0"});
+            send_response(respond, client_fd, ack);
+            return;
+        }
+    }
+
+    // Default: simple ACK back.
     send_response(respond, client_fd, RESP_OK);
 }
 

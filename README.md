@@ -10,43 +10,29 @@ event loops, the Redis protocol and more.
 **Note**: If you're viewing this repo on GitHub, head over to
 [codecrafters.io](https://codecrafters.io) to try the challenge.
 
-# Passing the first stage
+# Current state
 
-The entry point for your Redis implementation is in `src/Server.cpp`. Study and
-uncomment the relevant code, and push your changes to pass the first stage:
+- Non-blocking server with a `select` loop, per-connection buffers, and queued responses.
+- Supports core commands: `PING`, `ECHO`, `SET/GET` (with PX expiry), `INCR`, list ops (`LPUSH/RPUSH/LPOP/LLEN/LRANGE/BLPOP`), streams (`XADD/XRANGE/XREAD`), `TYPE`, `INFO`, and transactions (`MULTI/EXEC/DISCARD`).
+- Replication: master responds to `PSYNC` with a full resync header and sends a baked-in empty RDB snapshot, then streams writes (`SET`, pushes, `INCR`, `XADD`) to replicas over the same connection. Replica consumes the RDB payload, processes propagated commands, and does not reply to master (except handshake `PING`/`REPLCONF`).
+- Basic tests build with CMake/CTest.
+
+# Running the server
 
 ```sh
-git commit -am "pass 1st stage" # any msg
-git push origin master
-```
-
-That's all!
-
-# Stage 2 & beyond
-
-Note: This section is for stages 2 and beyond.
-
-1. Ensure you have `cmake` installed locally
-1. Run `./your_program.sh` to run your Redis server, which is implemented in
-   `src/Server.cpp`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
+# Default: port 6379, master role
+./your_program.sh
 
 # Custom port
-
-Pass `--port <number>` to run on a non-default port (useful when running multiple instances for replication):
-
-```sh
 ./your_program.sh --port 7000
-```
 
-# Replica mode
-
-Start a replica by pointing it at a master host/port:
-
-```sh
+# Replica mode: connect to an existing master
 ./your_program.sh --port 6380 --replicaof "localhost 6379"
 ```
+
+# Notes on replication
+- Handshake: replica sends `PING`, `REPLCONF listening-port`, `REPLCONF capa psync2`, then `PSYNC ? -1`. Master replies with `+FULLRESYNC <replid> 0` and streams an empty RDB as a bulk payload.
+- Live propagation: master forwards supported writes as RESP arrays over the same socket; replica applies them silently and serves its own clients normally.
 
 # Running tests
 
@@ -74,3 +60,11 @@ ctest --test-dir build
 4. Replace `select` with `epoll`/`kqueue` for scalability and move block/unblock bookkeeping to be O(1) per wake-up.
 5. Expand feature surface: AUTH, CONFIG/INFO, PSUBSCRIBE/SUBSCRIBE, and stream trimming (XTRIM) to mirror more Redis behaviors.
 6. Improve observability: structured logs, metrics counters for commands/latency, and trace IDs per connection to debug blocking workflows.
+
+# Modern C++ cleanup ideas (beginner-friendly)
+- Prefer `std::string_view` for read-only command parts to avoid copies; reserve `std::string` for owned/assembled replies.
+- Wrap raw sockets in small RAII structs (close-on-destroy) to simplify error exits and early returns.
+- Use `enum class` for roles/command categories and helper functions instead of free-form strings where possible.
+- Replace manual parsing helpers with small, total functions returning `std::optional<T>` to make error paths explicit.
+- Mark non-mutating helpers `[[nodiscard]]` where ignoring the result is a bug (e.g., parsers).
+- Keep lambdas small and capture-only what they need; prefer `auto` for iterators/indices and range-based loops for clarity.
