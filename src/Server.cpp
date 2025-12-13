@@ -56,6 +56,7 @@ public:
       connect_to_master_and_ping();
       master_client_state_.fd = master_fd_;
       master_client_state_.suppress_responses = true; // replicas must not reply to master
+      master_client_state_.is_replica = true;          // treat master link as a replica connection for reply gating
     }
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -485,7 +486,8 @@ private:
         ::send(target_fd, resp.data(), resp.size(), 0);
       }
     };
-    const ResponseSender &respond = respond_override ? respond_override : default_sender;
+    ResponseSender respond = respond_override ? respond_override : default_sender;
+    auto noop_sender = []([[maybe_unused]] int, [[maybe_unused]] std::string_view) {};
     bool allow_response = !client.suppress_responses;
     auto enqueue_response = [&client, &allow_response](const std::string &resp)
     {
@@ -539,7 +541,25 @@ private:
     };
 
     bool allow_response_for_replica = !client.suppress_responses || is_getack();
-    ResponseSender effective_respond = allow_response_for_replica ? respond : ResponseSender{};
+
+    if (client.is_replica)
+    {
+      if (is_getack())
+      {
+        // For GETACK we must reply to the master on this socket.
+        respond = [](int target_fd, std::string_view resp)
+        { ::send(target_fd, resp.data(), resp.size(), 0); };
+      }
+      else
+      {
+        respond = noop_sender; // suppress other replies on replication link
+      }
+    }
+    else if (!allow_response_for_replica)
+    {
+      respond = noop_sender;
+    }
+
     allow_response = allow_response_for_replica;
 
     if (cmd == CMD_MULTI)
@@ -632,7 +652,7 @@ private:
 
     bool should_replicate = role_ == kDefaultRoleMaster && !client.is_replica && is_replicated_command(cmd);
 
-    dispatch_command(client, cmd, parts, effective_respond);
+    dispatch_command(client, cmd, parts, respond);
 
     // Propagate write commands to all connected replicas over their replication links.
     if (should_replicate)

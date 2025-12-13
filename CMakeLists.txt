@@ -14,7 +14,14 @@ target_link_libraries(server PRIVATE Threads::Threads)
 
 # Tests
 enable_testing()
-add_executable(replication_tests tests/ReplicationTest.cpp src/Replication.cpp)
+add_executable(replication_tests
+  tests/ReplicationTest.cpp
+  src/Replication.cpp
+  src/Commands.cpp
+  src/RESP.cpp
+  src/BlockingManager.cpp
+  src/BlockingCommands.cpp
+)
 target_include_directories(replication_tests PRIVATE src)
 add_test(NAME replication_tests COMMAND replication_tests)
 
