@@ -5,6 +5,8 @@
 #include "BlockingCommands.hpp"
 #include "BlockingManager.hpp"
 #include "Replication.hpp"
+#include "ReplicationState.hpp"
+#include "WaitManager.hpp"
 #include <iostream>
 #include <array>
 #include <sys/socket.h>
@@ -41,13 +43,14 @@ struct ClientState
   std::vector<std::vector<std::string>> queued_commands{}; // commands staged during MULTI
   bool is_replica = false;                          // true if this connection is a replica link
   bool suppress_responses = false;                  // when true, do not send/queue responses
+  long long last_ack_offset = 0;                    // latest offset acknowledged via REPLCONF ACK
 };
 
 class Server
 {
 public:
   Server(int port, std::string role, std::string master_host, int master_port)
-      : port_(port), role_(std::move(role)), master_host_(std::move(master_host)), master_port_(master_port) {}
+      : port_(port), role_(std::move(role)), wait_manager_(replication_tracker_), master_host_(std::move(master_host)), master_port_(master_port) {}
 
   void run()
   {
@@ -170,6 +173,10 @@ public:
         {
           // Remove from blocking manager if client was blocked
           blocking_manager_.remove_blocked_client(client_fd);
+          if (client.is_replica)
+          {
+            replication_tracker_.on_replica_disconnect(client_fd);
+          }
           close(client_fd);
           it = clients_.erase(it);
         }
@@ -199,6 +206,9 @@ public:
         }
       };
       blocking_manager_.check_timeouts(send_callback);
+      wait_manager_.process(send_callback,
+                            [this](int fd)
+                            { return clients_.find(fd) != clients_.end(); });
     }
 
     // Cleanup
@@ -759,6 +769,7 @@ private:
 
   void propagate_to_replicas(const std::string &raw_request, int origin_fd)
   {
+    replication_tracker_.bump_offset(static_cast<long long>(raw_request.size()));
     for (auto &[fd, replica] : clients_)
     {
       if (fd == origin_fd)
@@ -767,6 +778,62 @@ private:
         continue;
       replica.pending_responses.push(raw_request);
     }
+  }
+
+  void send_getack_to_replicas()
+  {
+    const std::string &getack = replication_tracker_.getack_command();
+    for (auto &[fd, replica] : clients_)
+    {
+      (void)fd;
+      if (!replica.is_replica)
+        continue;
+      replica.pending_responses.push(getack);
+    }
+  }
+
+  void handle_wait_command(ClientState &client, const std::vector<std::string_view> &parts,
+                           const ResponseSender &respond)
+  {
+    if (parts.size() < 3)
+    {
+      respond(client.fd, "-ERR wrong number of arguments for 'wait' command\r\n");
+      return;
+    }
+
+    long long required = 0;
+    long long timeout_ms = 0;
+    try
+    {
+      required = std::stoll(std::string(parts[1]));
+      timeout_ms = std::stoll(std::string(parts[2]));
+    }
+    catch (...)
+    {
+      respond(client.fd, "-ERR value is not an integer or out of range\r\n");
+      return;
+    }
+
+    if (required <= 0)
+    {
+      respond(client.fd, ":0\r\n");
+      return;
+    }
+
+    const long long current_offset = replication_tracker_.current_offset();
+    const int connected = replica_connection_count();
+    auto send_resp = [&respond](int fd, const std::string &resp)
+    { respond(fd, resp); };
+    auto ask_getack = [this]()
+    { send_getack_to_replicas(); };
+
+    wait_manager_.handle_wait(client.fd,
+                              static_cast<int>(required),
+                              std::chrono::milliseconds(timeout_ms),
+                              current_offset,
+                              connected,
+                              ask_getack,
+                              send_resp);
   }
 
   void dispatch_command(ClientState &client, const std::string &cmd, const std::vector<std::string_view> &parts,
@@ -785,7 +852,7 @@ private:
     else if (cmd == CMD_GET)
       handle_get(client.fd, parts, kv_store_, respond);
     else if (cmd == CMD_WAIT)
-      handle_wait(client.fd, parts, replica_connection_count(), respond);
+      handle_wait_command(client, parts, respond);
     else if (cmd == CMD_LPUSH)
     {
       handle_lpush(client.fd, parts, kv_store_, blocking_manager_, respond);
@@ -831,16 +898,46 @@ private:
     else if (cmd == CMD_TYPE)
       handle_type(client.fd, parts, kv_store_, respond);
     else if (cmd == CMD_INFO)
-      handle_info(client.fd, parts, role_, replid_, repl_offset_, respond);
+      handle_info(client.fd, parts, role_, replid_, replication_tracker_.current_offset(), respond);
     else if (cmd == CMD_REPLCONF)
     {
-      long long repl_ack_offset = (&client == &master_client_state_) ? master_processed_bytes_ : repl_offset_;
+      if (parts.size() >= 3)
+      {
+        std::string subcmd(parts[1]);
+        std::transform(subcmd.begin(), subcmd.end(), subcmd.begin(), ::toupper);
+        if (subcmd == "ACK")
+        {
+          try
+          {
+            long long ack_offset = std::stoll(std::string(parts[2]));
+            client.last_ack_offset = ack_offset;
+            replication_tracker_.record_ack(client.fd, ack_offset);
+          }
+          catch (...)
+          {
+            // Ignore malformed ACK
+          }
+          auto send_cb = [this](int fd, const std::string &resp)
+          {
+            auto it = clients_.find(fd);
+            if (it != clients_.end())
+              it->second.pending_responses.push(resp);
+          };
+          wait_manager_.process(send_cb,
+                                [this](int fd)
+                                { return clients_.find(fd) != clients_.end(); });
+          return;
+        }
+      }
+
+      long long repl_ack_offset = (&client == &master_client_state_) ? master_processed_bytes_ : replication_tracker_.current_offset();
       handle_replconf(client.fd, parts, repl_ack_offset, respond);
     }
     else if (cmd == CMD_PSYNC)
     {
       client.is_replica = true; // Mark this link as a replica connection.
-      handle_psync(client.fd, replid_, repl_offset_, respond);
+      handle_psync(client.fd, replid_, replication_tracker_.current_offset(), respond);
+      replication_tracker_.on_replica_connect(client.fd, replication_tracker_.current_offset());
     }
     else if (cmd == CMD_XADD)
     {
@@ -875,7 +972,8 @@ private:
   BlockingManager blocking_manager_;
   std::string role_;
   std::string replid_ = std::string(kDefaultReplId);
-  long long repl_offset_ = 0;
+  ReplicationTracker replication_tracker_;
+  WaitManager wait_manager_;
   std::string master_host_;
   int master_port_{0};
   int master_fd_{-1};
