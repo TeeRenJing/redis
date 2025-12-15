@@ -27,6 +27,7 @@ constexpr const char *CMD_PING = "PING";
 constexpr const char *CMD_ECHO = "ECHO";
 constexpr const char *CMD_SET = "SET";
 constexpr const char *CMD_GET = "GET";
+constexpr const char *CMD_WAIT = "WAIT";
 constexpr const char *CMD_LPUSH = "LPUSH";
 constexpr const char *CMD_RPUSH = "RPUSH";
 constexpr const char *CMD_LRANGE = "LRANGE";
@@ -51,6 +52,8 @@ void handle_set(int client_fd, const std::vector<std::string_view> &parts, Store
                 const ResponseSender &respond = ResponseSender{});
 void handle_get(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                 const ResponseSender &respond = ResponseSender{});
+void handle_wait(int client_fd, const std::vector<std::string_view> &parts, int connected_replicas,
+                 const ResponseSender &respond = ResponseSender{});
 void handle_lpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                   BlockingManager &blocking_manager, const ResponseSender &respond = ResponseSender{});
 void handle_rpush(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,

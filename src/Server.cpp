@@ -745,6 +745,18 @@ private:
            cmd == CMD_INCR || cmd == CMD_XADD;
   }
 
+  int replica_connection_count() const
+  {
+    int count = 0;
+    for (const auto &[fd, client] : clients_)
+    {
+      (void)fd;
+      if (client.is_replica)
+        ++count;
+    }
+    return count;
+  }
+
   void propagate_to_replicas(const std::string &raw_request, int origin_fd)
   {
     for (auto &[fd, replica] : clients_)
@@ -772,6 +784,8 @@ private:
       handle_set(client.fd, parts, kv_store_, respond);
     else if (cmd == CMD_GET)
       handle_get(client.fd, parts, kv_store_, respond);
+    else if (cmd == CMD_WAIT)
+      handle_wait(client.fd, parts, replica_connection_count(), respond);
     else if (cmd == CMD_LPUSH)
     {
       handle_lpush(client.fd, parts, kv_store_, blocking_manager_, respond);

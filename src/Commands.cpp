@@ -137,6 +137,34 @@ void handle_get(int client_fd, const std::vector<std::string_view> &args, Store 
 }
 
 // ============================
+// WAIT
+// ============================
+void handle_wait(int client_fd, const std::vector<std::string_view> &args, int connected_replicas,
+                 const ResponseSender &respond)
+{
+    if (args.size() < 3)
+    {
+        send_response(respond, client_fd, "-ERR wrong number of arguments for 'wait' command\r\n");
+        return;
+    }
+
+    // Parse and validate the integer arguments even though we only need the current replica count.
+    try
+    {
+        (void)std::stoll(std::string(args[1]));
+        (void)std::stoll(std::string(args[2]));
+    }
+    catch (...)
+    {
+        send_response(respond, client_fd, "-ERR value is not an integer or out of range\r\n");
+        return;
+    }
+
+    std::string resp = ":" + std::to_string(connected_replicas) + "\r\n";
+    send_response(respond, client_fd, resp);
+}
+
+// ============================
 // LPUSH
 // ============================
 void handle_lpush(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
