@@ -32,8 +32,6 @@ void WaitManager::process(const std::function<void(int, const std::string &)> &s
 }
 
 void WaitManager::handle_wait(int client_fd, int required, std::chrono::milliseconds timeout,
-                              long long current_offset, int connected_replicas,
-                              const std::function<void()> &send_getack,
                               const std::function<void(int, const std::string &)> &send_response)
 {
     if (required <= 0)
@@ -42,6 +40,8 @@ void WaitManager::handle_wait(int client_fd, int required, std::chrono::millisec
         return;
     }
 
+    const long long current_offset = tracker_.current_offset();
+    const int connected_replicas = replica_count_provider_ ? replica_count_provider_() : 0;
     const int acked = tracker_.acked_count(current_offset);
 
     // No new writes since last WAIT -> return connected replicas immediately.
@@ -69,7 +69,8 @@ void WaitManager::handle_wait(int client_fd, int required, std::chrono::millisec
     }
 
     // Need to wait: ask replicas for ACKs and register wait.
-    send_getack();
+    if (request_getack_)
+        request_getack_();
     last_wait_observed_offset_ = current_offset;
 
     WaitRequest req{

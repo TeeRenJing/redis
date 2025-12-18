@@ -28,7 +28,7 @@ int ReplicationTracker::acked_count(long long target_offset) const
     return count;
 }
 
-const std::string &ReplicationTracker::getack_command()
+const std::string &ReplicationTracker::getack_command() const
 {
     if (cached_getack_.empty())
         cached_getack_ = build_resp_array({"REPLCONF", "GETACK", "*"});

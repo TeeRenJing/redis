@@ -50,7 +50,13 @@ class Server
 {
 public:
   Server(int port, std::string role, std::string master_host, int master_port)
-      : port_(port), role_(std::move(role)), wait_manager_(replication_tracker_), master_host_(std::move(master_host)), master_port_(master_port) {}
+      : port_(port), role_(std::move(role)),
+        wait_manager_(replication_tracker_,
+                      [this]()
+                      { return replica_connection_count(); },
+                      [this]()
+                      { request_replica_acks(); }),
+        master_host_(std::move(master_host)), master_port_(master_port) {}
 
   void run()
   {
@@ -780,16 +786,21 @@ private:
     }
   }
 
-  void send_getack_to_replicas()
+  void request_replica_acks()
   {
-    const std::string &getack = replication_tracker_.getack_command();
-    for (auto &[fd, replica] : clients_)
+    std::vector<int> replica_fds;
+    replica_fds.reserve(clients_.size());
+    for (const auto &[fd, client] : clients_)
     {
-      (void)fd;
-      if (!replica.is_replica)
-        continue;
-      replica.pending_responses.push(getack);
+      if (client.is_replica)
+        replica_fds.push_back(fd);
     }
+    replication_tracker_.request_acks(replica_fds, [this](int fd, const std::string &cmd)
+                                      {
+                                        auto it = clients_.find(fd);
+                                        if (it != clients_.end())
+                                          it->second.pending_responses.push(cmd);
+                                      });
   }
 
   void handle_wait_command(ClientState &client, const std::vector<std::string_view> &parts,
@@ -814,26 +825,12 @@ private:
       return;
     }
 
-    if (required <= 0)
-    {
-      respond(client.fd, ":0\r\n");
-      return;
-    }
-
-    const long long current_offset = replication_tracker_.current_offset();
-    const int connected = replica_connection_count();
-    auto send_resp = [&respond](int fd, const std::string &resp)
-    { respond(fd, resp); };
-    auto ask_getack = [this]()
-    { send_getack_to_replicas(); };
-
-    wait_manager_.handle_wait(client.fd,
-                              static_cast<int>(required),
-                              std::chrono::milliseconds(timeout_ms),
-                              current_offset,
-                              connected,
-                              ask_getack,
-                              send_resp);
+    wait_manager_.handle_wait(
+        client.fd,
+        static_cast<int>(required),
+        std::chrono::milliseconds(timeout_ms),
+        [&respond](int fd, const std::string &resp)
+        { respond(fd, resp); });
   }
 
   void dispatch_command(ClientState &client, const std::string &cmd, const std::vector<std::string_view> &parts,

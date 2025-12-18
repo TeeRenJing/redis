@@ -10,19 +10,21 @@
 class WaitManager
 {
 public:
-    explicit WaitManager(ReplicationTracker &tracker)
-        : tracker_(tracker) {}
+    using ReplicaCountProvider = std::function<int()>;
+    using GetAckRequest = std::function<void()>;
+
+    WaitManager(ReplicationTracker &tracker,
+                ReplicaCountProvider replica_count_provider,
+                GetAckRequest getack_request)
+        : tracker_(tracker),
+          replica_count_provider_(std::move(replica_count_provider)),
+          request_getack_(std::move(getack_request)) {}
 
     void handle_wait(int client_fd, int required, std::chrono::milliseconds timeout,
-                     long long current_offset, int connected_replicas,
-                     const std::function<void()> &send_getack,
                      const std::function<void(int, const std::string &)> &send_response);
 
     void process(const std::function<void(int, const std::string &)> &send_callback,
                  const std::function<bool(int)> &client_exists);
-
-    long long last_observed_offset() const { return last_wait_observed_offset_; }
-    void note_observed_offset(long long offset) { last_wait_observed_offset_ = offset; }
 
 private:
     struct WaitRequest
@@ -37,4 +39,6 @@ private:
     ReplicationTracker &tracker_;
     std::vector<WaitRequest> requests_;
     long long last_wait_observed_offset_{0};
+    ReplicaCountProvider replica_count_provider_;
+    GetAckRequest request_getack_;
 };
