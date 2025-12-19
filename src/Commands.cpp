@@ -15,6 +15,7 @@
 #include <limits>
 #include <utility>
 #include <cctype>
+#include <sstream>
 
 // ============================
 // SEND HELPER
@@ -48,6 +49,14 @@ inline void send_response(int client_fd, const char *resp)
 inline void send_response(int client_fd, std::string_view resp)
 {
     send_response(ResponseSender{}, client_fd, resp);
+}
+
+static std::string to_lower(std::string_view in)
+{
+    std::string out(in);
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c)
+                   { return static_cast<char>(std::tolower(c)); });
+    return out;
 }
 
 // ============================
@@ -959,4 +968,49 @@ void handle_xread(int client_fd, const std::vector<std::string_view> &args, Stor
     }
 
     send_response(respond, client_fd, RESP_EMPTY_ARRAY); // *0
+}
+
+// ============================
+// CONFIG GET
+// ============================
+void handle_config_get(int client_fd, const std::vector<std::string_view> &args,
+                       std::string_view dir, std::string_view dbfilename,
+                       const ResponseSender &respond)
+{
+    if (args.size() < 3)
+    {
+        send_response(respond, client_fd, RESP_EMPTY_ARRAY);
+        return;
+    }
+
+    std::string subcmd = to_lower(args[1]);
+    if (subcmd != "get")
+    {
+        send_response(respond, client_fd, RESP_EMPTY_ARRAY);
+        return;
+    }
+
+    std::string param = to_lower(args[2]);
+    std::string value;
+    if (param == "dir")
+    {
+        value = std::string(dir);
+    }
+    else if (param == "dbfilename")
+    {
+        value = std::string(dbfilename);
+    }
+    else
+    {
+        send_response(respond, client_fd, RESP_EMPTY_ARRAY);
+        return;
+    }
+
+    std::ostringstream resp;
+    resp << "*2\r\n"
+         << "$" << param.size() << "\r\n"
+         << param << "\r\n"
+         << "$" << value.size() << "\r\n"
+         << value << "\r\n";
+    send_response(respond, client_fd, resp.str());
 }

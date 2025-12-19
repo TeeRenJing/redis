@@ -106,14 +106,16 @@ private:
 class Server
 {
 public:
-  Server(int port, std::string role, std::string master_host, int master_port)
+  Server(int port, std::string role, std::string master_host, int master_port,
+         std::string config_dir, std::string config_dbfilename)
       : port_(port), role_(std::move(role)),
         wait_manager_(replication_tracker_,
                       [this]()
                       { return replica_connection_count(); },
                       [this]()
                       { request_replica_acks(); }),
-        master_host_(std::move(master_host)), master_port_(master_port) {}
+        master_host_(std::move(master_host)), master_port_(master_port),
+        config_dir_(std::move(config_dir)), config_dbfilename_(std::move(config_dbfilename)) {}
 
   void run()
   {
@@ -949,6 +951,8 @@ private:
       handle_type(client.fd(), parts, kv_store_, respond);
     else if (cmd == CMD_INFO)
       handle_info(client.fd(), parts, role_, replid_, replication_tracker_.current_offset(), respond);
+    else if (cmd == CMD_CONFIG)
+      handle_config_get(client.fd(), parts, config_dir_, config_dbfilename_, respond);
     else if (cmd == CMD_REPLCONF)
     {
       if (parts.size() >= 3)
@@ -1027,6 +1031,8 @@ private:
   ClientState master_client_state_;
   std::string master_buffer_;
   long long master_processed_bytes_{0};
+  std::string config_dir_;
+  std::string config_dbfilename_;
 
   void connect_to_master_and_ping()
   {
@@ -1116,6 +1122,8 @@ int main(int argc, char **argv)
   std::string role = std::string(kDefaultRoleMaster);
   std::string replica_host;
   int replica_port = 0;
+  std::string config_dir;
+  std::string config_dbfilename;
   for (int i = 1; i < argc; ++i)
   {
     std::string arg = argv[i];
@@ -1141,8 +1149,16 @@ int main(int argc, char **argv)
       if (!replica_host.empty())
         role = std::string(kDefaultRoleSlave);
     }
+    else if (arg == "--dir" && i + 1 < argc)
+    {
+      config_dir = argv[++i];
+    }
+    else if (arg == "--dbfilename" && i + 1 < argc)
+    {
+      config_dbfilename = argv[++i];
+    }
   }
-  Server server(port, role, replica_host, replica_port);
+  Server server(port, role, replica_host, replica_port, config_dir, config_dbfilename);
   server.run();
   return 0;
 }

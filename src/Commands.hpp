@@ -44,6 +44,7 @@ constexpr const char *CMD_XRANGE = "XRANGE";
 constexpr const char *CMD_XREAD = "XREAD";
 constexpr const char *CMD_REPLCONF = "REPLCONF";
 constexpr const char *CMD_PSYNC = "PSYNC";
+constexpr const char *CMD_CONFIG = "CONFIG";
 
 // Command Handlers
 void handle_ping(int client_fd, const ResponseSender &respond = ResponseSender{});
@@ -81,3 +82,6 @@ void handle_xrange(int client_fd, const std::vector<std::string_view> &parts, St
                   const ResponseSender &respond = ResponseSender{});
 void handle_xread(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                   BlockingManager &blocking_manager, const ResponseSender &respond = ResponseSender{});
+void handle_config_get(int client_fd, const std::vector<std::string_view> &parts,
+                       std::string_view dir, std::string_view dbfilename,
+                       const ResponseSender &respond = ResponseSender{});
