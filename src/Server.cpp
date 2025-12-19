@@ -25,6 +25,11 @@
 #include <queue>
 #include <random>
 #include <string_view>
+#include <filesystem>
+#include <fstream>
+#include <chrono>
+#include <sstream>
+#include <stdexcept>
 
 namespace
 {
@@ -119,6 +124,8 @@ public:
 
   void run()
   {
+    load_rdb_if_present();
+
     if (role_ == "slave" && !master_host_.empty())
     {
       connect_to_master_and_ping();
@@ -615,6 +622,15 @@ private:
                              [](char c)
                              { return c == '\n' || c == '\r'; }),
               cmd.end());
+    {
+      std::ostringstream oss;
+      oss << "Parsed command: " << cmd;
+      for (size_t i = 1; i < parts.size(); ++i)
+      {
+        oss << " [" << parts[i] << "]";
+      }
+      std::cout << oss.str() << std::endl;
+    }
     auto is_getack = [&parts]()
     {
       if (parts.size() >= 3)
@@ -949,6 +965,8 @@ private:
       handle_incr(client.fd(), parts, kv_store_, respond);
     else if (cmd == CMD_TYPE)
       handle_type(client.fd(), parts, kv_store_, respond);
+    else if (cmd == CMD_KEYS)
+      handle_keys(client.fd(), parts, kv_store_, respond);
     else if (cmd == CMD_INFO)
       handle_info(client.fd(), parts, role_, replid_, replication_tracker_.current_offset(), respond);
     else if (cmd == CMD_CONFIG)
@@ -1033,6 +1051,263 @@ private:
   long long master_processed_bytes_{0};
   std::string config_dir_;
   std::string config_dbfilename_;
+
+  void load_rdb_if_present()
+  {
+    if (config_dir_.empty() || config_dbfilename_.empty())
+      return;
+
+    std::filesystem::path rdb_path = std::filesystem::path(config_dir_) / config_dbfilename_;
+    if (!std::filesystem::exists(rdb_path))
+    {
+      std::cout << "RDB file not found at " << rdb_path << ", starting with empty store\n";
+      return;
+    }
+
+    std::ifstream file(rdb_path, std::ios::binary);
+    if (!file)
+    {
+      std::cout << "Unable to open RDB file at " << rdb_path << ", starting with empty store\n";
+      return;
+    }
+
+    std::vector<unsigned char> data(std::filesystem::file_size(rdb_path));
+    if (!file.read(reinterpret_cast<char *>(data.data()), static_cast<std::streamsize>(data.size())))
+    {
+      std::cout << "Failed to read RDB file at " << rdb_path << ", starting with empty store\n";
+      return;
+    }
+    std::cout << "Parsing RDB file at " << rdb_path << " (" << data.size() << " bytes)\n";
+
+    auto read_uint32_le = [](const unsigned char *p)
+    {
+      return static_cast<uint32_t>(p[0]) |
+             (static_cast<uint32_t>(p[1]) << 8) |
+             (static_cast<uint32_t>(p[2]) << 16) |
+             (static_cast<uint32_t>(p[3]) << 24);
+    };
+    auto read_uint64_le = [](const unsigned char *p)
+    {
+      uint64_t v = 0;
+      for (int i = 7; i >= 0; --i)
+      {
+        v <<= 8;
+        v |= p[i];
+      }
+      return v;
+    };
+
+    auto decode_length = [&data, &read_uint32_le](size_t &pos, size_t &out_len) -> bool
+    {
+      if (pos >= data.size())
+        return false;
+      unsigned char first = data[pos++];
+      unsigned char type = (first & 0xC0) >> 6;
+      if (type == 0) // 6-bit length
+      {
+        out_len = first & 0x3F;
+        return true;
+      }
+      else if (type == 1) // 14-bit length
+      {
+        if (pos >= data.size())
+          return false;
+        out_len = ((first & 0x3F) << 8) | data[pos++];
+        return true;
+      }
+      else if (type == 2) // 32-bit length
+      {
+        if (pos + 4 > data.size())
+          return false;
+        out_len = static_cast<size_t>(read_uint32_le(&data[pos]));
+        pos += 4;
+        return true;
+      }
+      else
+      {
+        // 11: special encoding (not supported here)
+        return false;
+      }
+    };
+
+    auto decode_string = [&data, &decode_length, &read_uint32_le](size_t &pos, std::string &out) -> bool
+    {
+      if (pos >= data.size())
+        return false;
+      unsigned char first = data[pos];
+      unsigned char type = (first & 0xC0) >> 6;
+      if (type == 3) // special encoding
+      {
+        unsigned char enc = first & 0x3F;
+        ++pos;
+        if (enc == 0) // int8
+        {
+          if (pos >= data.size())
+            return false;
+          out = std::to_string(static_cast<int>(static_cast<int8_t>(data[pos++])));
+          return true;
+        }
+        else if (enc == 1) // int16
+        {
+          if (pos + 2 > data.size())
+            return false;
+          int16_t v = static_cast<int16_t>(static_cast<uint16_t>(data[pos]) |
+                                           (static_cast<uint16_t>(data[pos + 1]) << 8));
+          pos += 2;
+          out = std::to_string(v);
+          return true;
+        }
+        else if (enc == 2) // int32
+        {
+          if (pos + 4 > data.size())
+            return false;
+          int32_t v = static_cast<int32_t>(read_uint32_le(&data[pos]));
+          pos += 4;
+          out = std::to_string(v);
+          return true;
+        }
+        // LZF or other encodings not supported
+        return false;
+      }
+      size_t len = 0;
+      if (!decode_length(pos, len))
+        return false;
+      if (pos + len > data.size())
+        return false;
+      out.assign(reinterpret_cast<const char *>(&data[pos]), len);
+      pos += len;
+      return true;
+    };
+
+    size_t pos = 0;
+
+    auto read_byte = [&data](size_t &pos, unsigned char &out) -> bool
+    {
+      if (pos >= data.size())
+        return false;
+      out = data[pos++];
+      return true;
+    };
+
+    // Verify header "REDIS0011"
+    if (data.size() < 9 || std::string(reinterpret_cast<const char *>(data.data()), 9) != "REDIS0011")
+    {
+      throw std::runtime_error("RDB header REDIS0011 not found");
+    }
+    pos = 9;
+
+    auto now_sys = std::chrono::system_clock::now();
+    auto now_steady = std::chrono::steady_clock::now();
+
+    while (pos < data.size())
+    {
+      unsigned char opcode = 0;
+      if (!read_byte(pos, opcode))
+        break;
+
+      if (opcode == 0xFA) // metadata key/value, ignore
+      {
+        std::string key, val;
+        if (!decode_string(pos, key) || !decode_string(pos, val))
+          break;
+        continue;
+      }
+
+      if (opcode == 0xFE) // select DB
+      {
+        size_t db_index = 0;
+        if (!decode_length(pos, db_index))
+          break;
+        continue;
+      }
+
+      if (opcode == 0xFB) // resize db (hash table sizes), skip two lengths
+      {
+        size_t _unused = 0;
+        if (!decode_length(pos, _unused))
+          break;
+        if (!decode_length(pos, _unused))
+          break;
+        continue;
+      }
+
+      if (opcode == 0xFF) // EOF
+      {
+        break;
+      }
+
+      // Handle expirations: opcode can be FC (ms) or FD (s) preceding value type.
+      std::chrono::steady_clock::time_point expiry_tp = std::chrono::steady_clock::time_point::max();
+      bool consumed_opcode = false;
+      if (opcode == 0xFC || opcode == 0xFD)
+      {
+        consumed_opcode = true;
+        if (opcode == 0xFC)
+        {
+          if (pos + 8 > data.size())
+            break;
+          uint64_t ms = read_uint64_le(&data[pos]);
+          pos += 8;
+          auto target = std::chrono::system_clock::time_point(std::chrono::milliseconds(ms));
+          if (target > now_sys)
+          {
+            expiry_tp = now_steady + std::chrono::duration_cast<std::chrono::steady_clock::duration>(target - now_sys);
+          }
+          else
+          {
+            expiry_tp = std::chrono::steady_clock::time_point::min();
+          }
+        }
+        else
+        {
+          if (pos + 4 > data.size())
+            break;
+          uint32_t seconds = read_uint32_le(&data[pos]);
+          pos += 4;
+          auto target = std::chrono::system_clock::time_point(std::chrono::seconds(seconds));
+          if (target > now_sys)
+          {
+            expiry_tp = now_steady + std::chrono::duration_cast<std::chrono::steady_clock::duration>(target - now_sys);
+          }
+          else
+          {
+            expiry_tp = std::chrono::steady_clock::time_point::min();
+          }
+        }
+        // Next byte is actual type
+        if (!read_byte(pos, opcode))
+          break;
+      }
+
+      if (opcode == 0x00) // string
+      {
+        std::string key, value;
+        if (!decode_string(pos, key) || !decode_string(pos, value))
+          break;
+        std::cout << "RDB string entry key=" << key << " value_len=" << value.size() << std::endl;
+
+        if (expiry_tp != std::chrono::steady_clock::time_point::min())
+        {
+          kv_store_[key] = std::make_unique<StringValue>(value, expiry_tp);
+          if (expiry_tp == std::chrono::steady_clock::time_point::max())
+          {
+            std::cout << "RDB load: key='" << key << "' with no expiry" << std::endl;
+          }
+          else
+          {
+            auto ttl_ms = std::chrono::duration_cast<std::chrono::milliseconds>(expiry_tp - now_steady).count();
+            std::cout << "RDB load: key='" << key << "' ttl_ms=" << ttl_ms << std::endl;
+          }
+        }
+        // else expired at load time: drop
+        continue;
+      }
+
+      // Unsupported opcode; stop parsing to avoid misalignment.
+      if (!consumed_opcode)
+        break;
+    }
+  }
 
   void connect_to_master_and_ping()
   {

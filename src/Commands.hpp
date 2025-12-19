@@ -44,6 +44,7 @@ constexpr const char *CMD_XRANGE = "XRANGE";
 constexpr const char *CMD_XREAD = "XREAD";
 constexpr const char *CMD_REPLCONF = "REPLCONF";
 constexpr const char *CMD_PSYNC = "PSYNC";
+constexpr const char *CMD_KEYS = "KEYS";
 constexpr const char *CMD_CONFIG = "CONFIG";
 
 // Command Handlers
@@ -74,6 +75,8 @@ void handle_info(int client_fd, const std::vector<std::string_view> &parts, std:
                  const ResponseSender &respond = ResponseSender{});
 void handle_replconf(int client_fd, const std::vector<std::string_view> &parts, long long replica_offset,
                      const ResponseSender &respond = ResponseSender{});
+void handle_keys(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
+                 const ResponseSender &respond = ResponseSender{});
 void handle_psync(int client_fd, std::string_view replid, long long repl_offset,
                   const ResponseSender &respond = ResponseSender{});
 void handle_xadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,

@@ -513,6 +513,33 @@ void handle_type(int client_fd, const std::vector<std::string_view> &args, Store
 }
 
 // ============================
+// KEYS (supports only "*" pattern)
+// ============================
+void handle_keys(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
+                 const ResponseSender &respond)
+{
+    if (args.size() < 2)
+    {
+        send_response(respond, client_fd, RESP_EMPTY_ARRAY);
+        return;
+    }
+
+    if (args[1] != "*")
+    {
+        send_response(respond, client_fd, RESP_EMPTY_ARRAY);
+        return;
+    }
+
+    std::string resp = "*" + std::to_string(kv_store.size()) + "\r\n";
+    for (const auto &entry : kv_store)
+    {
+        const std::string &key = entry.first;
+        resp += "$" + std::to_string(key.size()) + "\r\n" + key + "\r\n";
+    }
+    send_response(respond, client_fd, resp);
+}
+
+// ============================
 // INFO (replication only)
 // ============================
 void handle_info(int client_fd, const std::vector<std::string_view> &args, std::string_view role,
