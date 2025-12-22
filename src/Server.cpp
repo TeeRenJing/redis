@@ -1210,6 +1210,60 @@ private:
       handle_info(client.fd(), parts, role_, replid_, replication_tracker_.current_offset(), respond);
     else if (cmd == CMD_CONFIG)
       handle_config_get(client.fd(), parts, config_dir_, config_dbfilename_, respond);
+    else if (cmd == CMD_PUBLISH)
+    {
+      if (parts.size() < 3)
+      {
+        respond(client.fd(), "-ERR wrong number of arguments for 'publish' command\r\n");
+        return;
+      }
+
+      std::string channel(parts[1]);
+      std::string payload(parts[2]);
+
+      size_t delivered = 0;
+      std::string message;
+      auto it = channel_subscribers_.find(channel);
+      if (it != channel_subscribers_.end())
+      {
+        // Build the message once: ["message", channel, payload]
+        message.reserve(channel.size() + payload.size() + 64);
+        message.append("*3\r\n$7\r\nmessage\r\n$");
+        message.append(std::to_string(channel.size()));
+        message.append("\r\n");
+        message.append(channel);
+        message.append("\r\n$");
+        message.append(std::to_string(payload.size()));
+        message.append("\r\n");
+        message.append(payload);
+        message.append("\r\n");
+
+        // Deliver to connected subscribers
+        std::vector<int> stale_fds;
+        for (int fd : it->second)
+        {
+          if (is_client_connected(fd))
+          {
+            enqueue_response_for_client(fd, message);
+            ++delivered;
+          }
+          else
+          {
+            stale_fds.push_back(fd);
+          }
+        }
+
+        for (int fd : stale_fds)
+          it->second.erase(fd);
+
+        if (it->second.empty())
+          channel_subscribers_.erase(it);
+      }
+
+      std::string resp = ":" + std::to_string(delivered) + "\r\n";
+      respond(client.fd(), resp);
+      return;
+    }
     else if (cmd == CMD_REPLCONF)
     {
       if (parts.size() >= 3)
