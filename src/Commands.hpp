@@ -46,6 +46,7 @@ constexpr const char *CMD_REPLCONF = "REPLCONF";
 constexpr const char *CMD_PSYNC = "PSYNC";
 constexpr const char *CMD_KEYS = "KEYS";
 constexpr const char *CMD_CONFIG = "CONFIG";
+constexpr const char *CMD_SUBSCRIBE = "SUBSCRIBE";
 
 // Command Handlers
 void handle_ping(int client_fd, const ResponseSender &respond = ResponseSender{});

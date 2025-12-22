@@ -18,6 +18,8 @@
 #include <map>
 #include <string>
 #include <utility>
+#include <unordered_map>
+#include <unordered_set>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -96,6 +98,14 @@ public:
   long long last_ack_offset() const { return last_ack_offset_; }
   void set_last_ack_offset(long long value) { last_ack_offset_ = value; }
 
+  bool add_subscription(const std::string &channel)
+  {
+    return subscriptions_.insert(channel).second;
+  }
+
+  size_t subscription_count() const { return subscriptions_.size(); }
+  const std::unordered_set<std::string> &subscriptions() const { return subscriptions_; }
+
 private:
   // Per-connection state so the event loop can make progress without blocking.
   int fd_{-1};
@@ -106,6 +116,7 @@ private:
   bool is_replica_ = false;                        // true if this connection is a replica link
   bool suppress_responses_ = false;                // when true, do not send/queue responses
   long long last_ack_offset_ = 0;                  // latest offset acknowledged via REPLCONF ACK
+  std::unordered_set<std::string> subscriptions_;  // pub/sub channels this client is listening to
 };
 
 class Server
@@ -245,6 +256,7 @@ public:
         {
           // Remove from blocking manager if client was blocked
           blocking_manager_.remove_blocked_client(client_fd);
+          remove_client_subscriptions(client);
           if (client.is_replica())
           {
             replication_tracker_.on_replica_disconnect(client_fd);
@@ -849,6 +861,19 @@ private:
     }
   }
 
+  void remove_client_subscriptions(const ClientState &client)
+  {
+    for (const auto &channel : client.subscriptions())
+    {
+      auto map_it = channel_subscribers_.find(channel);
+      if (map_it == channel_subscribers_.end())
+        continue;
+      map_it->second.erase(client.fd());
+      if (map_it->second.empty())
+        channel_subscribers_.erase(map_it);
+    }
+  }
+
   bool is_client_connected(int fd) const
   {
     return clients_.find(fd) != clients_.end();
@@ -923,6 +948,33 @@ private:
       handle_ping(client.fd(), respond);
     else if (cmd == CMD_ECHO)
       handle_echo(client.fd(), parts, respond);
+    else if (cmd == CMD_SUBSCRIBE)
+    {
+      if (parts.size() < 2)
+      {
+        respond(client.fd(), "-ERR wrong number of arguments for 'subscribe' command\r\n");
+        return;
+      }
+
+      for (size_t i = 1; i < parts.size(); ++i)
+      {
+        std::string channel(parts[i]);
+        client.add_subscription(channel);
+        channel_subscribers_[channel].insert(client.fd());
+
+        std::string resp;
+        resp.reserve(channel.size() + 32);
+        resp.append("*3\r\n$9\r\nsubscribe\r\n$");
+        resp.append(std::to_string(channel.size()));
+        resp.append("\r\n");
+        resp.append(channel);
+        resp.append("\r\n:");
+        resp.append(std::to_string(client.subscription_count()));
+        resp.append("\r\n");
+        respond(client.fd(), resp);
+      }
+      return;
+    }
     else if (cmd == CMD_SET)
       handle_set(client.fd(), parts, kv_store_, respond);
     else if (cmd == CMD_GET)
@@ -1039,6 +1091,7 @@ private:
   std::map<int, ClientState> clients_;
   Store kv_store_;
   BlockingManager blocking_manager_;
+  std::unordered_map<std::string, std::unordered_set<int>> channel_subscribers_;
   std::string role_;
   std::string replid_ = std::string(kDefaultReplId);
   ReplicationTracker replication_tracker_;
