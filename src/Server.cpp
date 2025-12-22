@@ -1002,7 +1002,17 @@ private:
       handle_blocking_command(client, cmd, parts);
     }
     else if (cmd == CMD_PING)
-      handle_ping(client.fd(), respond);
+    {
+      if (client.in_subscribe_mode())
+      {
+        // Subscribed clients expect a RESP array: ["pong", ""]
+        respond(client.fd(), "*2\r\n$4\r\npong\r\n$0\r\n\r\n");
+      }
+      else
+      {
+        handle_ping(client.fd(), respond);
+      }
+    }
     else if (cmd == CMD_ECHO)
       handle_echo(client.fd(), parts, respond);
     else if (cmd == CMD_SUBSCRIBE)
