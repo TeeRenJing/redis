@@ -38,6 +38,15 @@ namespace
   constexpr std::string_view kDefaultRoleMaster = "master";
   constexpr std::string_view kDefaultRoleSlave = "slave";
   constexpr std::string_view kDefaultReplId = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+
+  std::string to_lower(std::string_view in)
+  {
+    std::string out(in);
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c)
+                   { return static_cast<char>(std::tolower(c)); });
+    return out;
+  }
 }
 
 class ClientState
@@ -103,8 +112,30 @@ public:
     return subscriptions_.insert(channel).second;
   }
 
+  bool remove_subscription(const std::string &channel)
+  {
+    return subscriptions_.erase(channel) > 0;
+  }
+
+  bool add_pattern(const std::string &pattern)
+  {
+    return patterns_.insert(pattern).second;
+  }
+
+  bool remove_pattern(const std::string &pattern)
+  {
+    return patterns_.erase(pattern) > 0;
+  }
+
   size_t subscription_count() const { return subscriptions_.size(); }
+  size_t pattern_count() const { return patterns_.size(); }
+  size_t total_subscription_count() const { return subscription_count() + pattern_count(); }
   const std::unordered_set<std::string> &subscriptions() const { return subscriptions_; }
+  const std::unordered_set<std::string> &patterns() const { return patterns_; }
+
+  bool in_subscribe_mode() const { return subscribe_mode_; }
+  void enter_subscribe_mode() { subscribe_mode_ = true; }
+  void exit_subscribe_mode() { subscribe_mode_ = false; }
 
 private:
   // Per-connection state so the event loop can make progress without blocking.
@@ -117,6 +148,8 @@ private:
   bool suppress_responses_ = false;                // when true, do not send/queue responses
   long long last_ack_offset_ = 0;                  // latest offset acknowledged via REPLCONF ACK
   std::unordered_set<std::string> subscriptions_;  // pub/sub channels this client is listening to
+  std::unordered_set<std::string> patterns_;       // pub/sub patterns this client is listening to
+  bool subscribe_mode_ = false;                    // restricts allowed commands when true
 };
 
 class Server
@@ -634,6 +667,7 @@ private:
                              [](char c)
                              { return c == '\n' || c == '\r'; }),
               cmd.end());
+    std::string original_cmd_lower = to_lower(parts[0]);
     {
       std::ostringstream oss;
       oss << "Parsed command: " << cmd;
@@ -655,6 +689,20 @@ private:
     };
 
     bool allow_response_for_replica = !client.suppress_responses() || is_getack();
+
+    auto is_subscribe_command = [&cmd]()
+    {
+      return cmd == CMD_SUBSCRIBE || cmd == CMD_UNSUBSCRIBE || cmd == CMD_PSUBSCRIBE || cmd == CMD_PUNSUBSCRIBE;
+    };
+
+    // Enforce subscribed mode restrictions.
+    if (client.in_subscribe_mode() && !is_subscribe_command() && cmd != CMD_PING && cmd != "QUIT")
+    {
+      std::string err = "-ERR Can't execute '" + original_cmd_lower +
+                        "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n";
+      enqueue_response(err);
+      return;
+    }
 
     if (client.is_replica())
     {
@@ -872,6 +920,15 @@ private:
       if (map_it->second.empty())
         channel_subscribers_.erase(map_it);
     }
+    for (const auto &pattern : client.patterns())
+    {
+      auto map_it = pattern_subscribers_.find(pattern);
+      if (map_it == pattern_subscribers_.end())
+        continue;
+      map_it->second.erase(client.fd());
+      if (map_it->second.empty())
+        pattern_subscribers_.erase(map_it);
+    }
   }
 
   bool is_client_connected(int fd) const
@@ -956,6 +1013,7 @@ private:
         return;
       }
 
+      client.enter_subscribe_mode();
       for (size_t i = 1; i < parts.size(); ++i)
       {
         std::string channel(parts[i]);
@@ -973,6 +1031,125 @@ private:
         resp.append("\r\n");
         respond(client.fd(), resp);
       }
+      return;
+    }
+    else if (cmd == CMD_UNSUBSCRIBE)
+    {
+      // If no channels specified, unsubscribe from all.
+      std::vector<std::string> targets;
+      if (parts.size() == 1)
+      {
+        targets.assign(client.subscriptions().begin(), client.subscriptions().end());
+        if (targets.empty())
+          targets.emplace_back(""); // Redis replies with empty channel when none were set
+      }
+      else
+      {
+        for (size_t i = 1; i < parts.size(); ++i)
+          targets.emplace_back(parts[i]);
+      }
+
+      for (const auto &channel : targets)
+      {
+        bool removed = client.remove_subscription(channel);
+        if (removed)
+        {
+          auto it = channel_subscribers_.find(channel);
+          if (it != channel_subscribers_.end())
+          {
+            it->second.erase(client.fd());
+            if (it->second.empty())
+              channel_subscribers_.erase(it);
+          }
+        }
+
+        std::string resp;
+        resp.reserve(channel.size() + 32);
+        resp.append("*3\r\n$11\r\nunsubscribe\r\n$");
+        resp.append(std::to_string(channel.size()));
+        resp.append("\r\n");
+        resp.append(channel);
+        resp.append("\r\n:");
+        resp.append(std::to_string(client.total_subscription_count()));
+        resp.append("\r\n");
+        respond(client.fd(), resp);
+      }
+
+      if (client.total_subscription_count() == 0)
+        client.exit_subscribe_mode();
+      return;
+    }
+    else if (cmd == CMD_PSUBSCRIBE)
+    {
+      if (parts.size() < 2)
+      {
+        respond(client.fd(), "-ERR wrong number of arguments for 'psubscribe' command\r\n");
+        return;
+      }
+
+      client.enter_subscribe_mode();
+      for (size_t i = 1; i < parts.size(); ++i)
+      {
+        std::string pattern(parts[i]);
+        client.add_pattern(pattern);
+        pattern_subscribers_[pattern].insert(client.fd());
+
+        std::string resp;
+        resp.reserve(pattern.size() + 32);
+        resp.append("*3\r\n$10\r\npsubscribe\r\n$");
+        resp.append(std::to_string(pattern.size()));
+        resp.append("\r\n");
+        resp.append(pattern);
+        resp.append("\r\n:");
+        resp.append(std::to_string(client.total_subscription_count()));
+        resp.append("\r\n");
+        respond(client.fd(), resp);
+      }
+      return;
+    }
+    else if (cmd == CMD_PUNSUBSCRIBE)
+    {
+      std::vector<std::string> targets;
+      if (parts.size() == 1)
+      {
+        targets.assign(client.patterns().begin(), client.patterns().end());
+        if (targets.empty())
+          targets.emplace_back("");
+      }
+      else
+      {
+        for (size_t i = 1; i < parts.size(); ++i)
+          targets.emplace_back(parts[i]);
+      }
+
+      for (const auto &pattern : targets)
+      {
+        bool removed = client.remove_pattern(pattern);
+        if (removed)
+        {
+          auto it = pattern_subscribers_.find(pattern);
+          if (it != pattern_subscribers_.end())
+          {
+            it->second.erase(client.fd());
+            if (it->second.empty())
+              pattern_subscribers_.erase(it);
+          }
+        }
+
+        std::string resp;
+        resp.reserve(pattern.size() + 32);
+        resp.append("*3\r\n$12\r\npunsubscribe\r\n$");
+        resp.append(std::to_string(pattern.size()));
+        resp.append("\r\n");
+        resp.append(pattern);
+        resp.append("\r\n:");
+        resp.append(std::to_string(client.total_subscription_count()));
+        resp.append("\r\n");
+        respond(client.fd(), resp);
+      }
+
+      if (client.total_subscription_count() == 0)
+        client.exit_subscribe_mode();
       return;
     }
     else if (cmd == CMD_SET)
@@ -1092,6 +1269,7 @@ private:
   Store kv_store_;
   BlockingManager blocking_manager_;
   std::unordered_map<std::string, std::unordered_set<int>> channel_subscribers_;
+  std::unordered_map<std::string, std::unordered_set<int>> pattern_subscribers_;
   std::string role_;
   std::string replid_ = std::string(kDefaultReplId);
   ReplicationTracker replication_tracker_;

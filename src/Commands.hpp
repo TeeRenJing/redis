@@ -47,6 +47,9 @@ constexpr const char *CMD_PSYNC = "PSYNC";
 constexpr const char *CMD_KEYS = "KEYS";
 constexpr const char *CMD_CONFIG = "CONFIG";
 constexpr const char *CMD_SUBSCRIBE = "SUBSCRIBE";
+constexpr const char *CMD_UNSUBSCRIBE = "UNSUBSCRIBE";
+constexpr const char *CMD_PSUBSCRIBE = "PSUBSCRIBE";
+constexpr const char *CMD_PUNSUBSCRIBE = "PUNSUBSCRIBE";
 
 // Command Handlers
 void handle_ping(int client_fd, const ResponseSender &respond = ResponseSender{});
