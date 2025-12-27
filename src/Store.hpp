@@ -34,6 +34,12 @@ struct ListValue : public ValueBase
     std::deque<std::string> values;
 };
 
+struct SortedSetValue : public ValueBase
+{
+    // Mapping from member to score; ordering not required for current commands.
+    std::unordered_map<std::string, double> members;
+};
+
 struct StreamEntry
 {
     // Represents a single entry in the stream

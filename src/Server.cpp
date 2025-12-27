@@ -875,7 +875,7 @@ private:
   bool is_replicated_command(const std::string &cmd) const
   {
     return cmd == CMD_SET || cmd == CMD_LPUSH || cmd == CMD_RPUSH || cmd == CMD_LPOP ||
-           cmd == CMD_INCR || cmd == CMD_XADD;
+           cmd == CMD_INCR || cmd == CMD_XADD || cmd == CMD_ZADD;
   }
 
   // Centralized list existence check to keep storage details local.
@@ -1202,6 +1202,8 @@ private:
       handle_lpop(client.fd(), parts, kv_store_, respond);
     else if (cmd == CMD_INCR)
       handle_incr(client.fd(), parts, kv_store_, respond);
+    else if (cmd == CMD_ZADD)
+      handle_zadd(client.fd(), parts, kv_store_, respond);
     else if (cmd == CMD_TYPE)
       handle_type(client.fd(), parts, kv_store_, respond);
     else if (cmd == CMD_KEYS)

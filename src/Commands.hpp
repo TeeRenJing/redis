@@ -35,6 +35,7 @@ constexpr const char *CMD_LLEN = "LLEN";
 constexpr const char *CMD_LPOP = "LPOP";
 constexpr const char *CMD_INCR = "INCR";
 constexpr const char *CMD_MULTI = "MULTI";
+constexpr const char *CMD_ZADD = "ZADD";
 constexpr const char *CMD_EXEC = "EXEC";
 constexpr const char *CMD_DISCARD = "DISCARD";
 constexpr const char *CMD_TYPE = "TYPE";
@@ -72,6 +73,8 @@ void handle_llen(int client_fd, const std::vector<std::string_view> &parts, Stor
 void handle_lpop(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                  const ResponseSender &respond = ResponseSender{});
 void handle_incr(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
+                 const ResponseSender &respond = ResponseSender{});
+void handle_zadd(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                  const ResponseSender &respond = ResponseSender{});
 void handle_type(int client_fd, const std::vector<std::string_view> &parts, Store &kv_store,
                  const ResponseSender &respond = ResponseSender{});

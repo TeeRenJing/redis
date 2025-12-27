@@ -418,6 +418,63 @@ void handle_incr(int client_fd, const std::vector<std::string_view> &args, Store
     std::string resp = ":" + std::to_string(result_value) + "\r\n";
     send_response(respond, client_fd, resp);
 }
+
+// ============================
+// ZADD
+// ============================
+void handle_zadd(int client_fd, const std::vector<std::string_view> &args, Store &kv_store,
+                 const ResponseSender &respond)
+{
+    if (args.size() < 4 || ((args.size() - 2) % 2 != 0))
+    {
+        send_response(respond, client_fd, "-ERR wrong number of arguments for 'zadd' command\r\n");
+        return;
+    }
+
+    const std::string key(args[1]);
+    SortedSetValue *zset_ptr = nullptr;
+
+    if (auto it = kv_store.find(key); it != kv_store.end())
+    {
+        zset_ptr = dynamic_cast<SortedSetValue *>(it->second.get());
+        if (!zset_ptr)
+        {
+            send_response(respond, client_fd, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+            return;
+        }
+    }
+    else
+    {
+        auto new_set = std::make_unique<SortedSetValue>();
+        zset_ptr = new_set.get();
+        kv_store[key] = std::move(new_set);
+    }
+
+    long long added = 0;
+    for (size_t i = 2; i + 1 < args.size(); i += 2)
+    {
+        double score = 0.0;
+        try
+        {
+            score = std::stod(std::string(args[i]));
+        }
+        catch (...)
+        {
+            send_response(respond, client_fd, "-ERR value is not a valid float\r\n");
+            return;
+        }
+
+        std::string member(args[i + 1]);
+        auto [it, inserted] = zset_ptr->members.emplace(member, score);
+        if (!inserted)
+            it->second = score; // Update existing member's score
+        else
+            ++added;
+    }
+
+    std::string resp = ":" + std::to_string(added) + "\r\n";
+    send_response(respond, client_fd, resp);
+}
 // ============================
 // LRANGE
 // ============================
@@ -504,6 +561,8 @@ void handle_type(int client_fd, const std::vector<std::string_view> &args, Store
         type_str = "string";
     else if (dynamic_cast<ListValue *>(it->second.get()))
         type_str = "list";
+    else if (dynamic_cast<SortedSetValue *>(it->second.get()))
+        type_str = "zset";
     else if (dynamic_cast<StreamValue *>(it->second.get()))
         type_str = "stream";
     else
